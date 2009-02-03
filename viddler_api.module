@@ -1,0 +1,516 @@
+<?php
+// $Id$
+/**
+ * @file
+ * Viddler API for Drupal
+ *
+ * @author Jeremy Heslop (www.omnitechpro.com)
+ */
+
+if (version_compare(PHP_VERSION, '5.0') < 0) {
+  require_once 'phpviddler.php';
+  define('PHPVIDDLERCLASS', "Phpviddler");
+}
+else {
+  require_once 'php5viddler.php';
+  define('PHPVIDDLERCLASS', "Php5viddler");
+}
+
+/**
+ * Authenticate and retrieve session
+ *
+ * @return sessionid
+ *   session id of valid viddler api login
+ */
+function viddler_api_authenticate() {
+  $phpviddlerclass = PHPVIDDLERCLASS;
+  $viddler_connect = new $phpviddlerclass();
+  $apikey = urlencode(variable_get('viddler_apikey', ''));
+  $username = urlencode(variable_get('viddler_username', ''));
+  $password = urlencode(variable_get('viddler_password', ''));
+
+  $viddler_session_cache = cache_get('viddler_api_' . $username);
+  
+  if (empty($viddler_session_cache->data) || time() > $viddler_session_cache->expire || $reset || true) {
+    $viddler_connect->apiKey = $apikey;
+    try {
+      $viddler_session = $viddler_connect->user_authenticate($username, $password);
+      // Set session_id cache for 5 minutes per http://developers.viddler.com/documentation/api/method-users-auth/
+      cache_set('viddler_api_' . $username, $viddler_session['auth']['sessionid'], 'cache', time() + 300);
+      return $viddler_session['auth']['sessionid'];
+    } catch (Exception $e) {
+      if(variable_get('viddler_show_debug', ''))
+        drupal_set_message("Viddler API Authenticate Error: " . $e->getMessage() . " Details: " . $e->details . " Method: " . $e->method, 'error');
+      return false;
+    }
+  }
+  else{
+    return $viddler_session_cache->data;
+  }
+}
+
+/**
+ * Retrieve embed code for video
+ *
+ * @var $id of video, $type of player, $width of video, $height of video, $autoplay, $options for flash player
+ * @return html of the video's embed code
+ */
+function viddler_api_video_getembed($id,$type = 'player',$width=437,$height=370,$autoplay = false,$options = false) {
+  $phpviddlerclass = PHPVIDDLERCLASS;
+  $viddler_connect = new $phpviddlerclass();
+  return $viddler_connect->video_getEmbed($id,'player',$width,$height,$autoplay,$options = false);
+}
+
+/**
+ * Retrieve thumbnail for video
+ *
+ * @var $id of video
+ * @return thumbnail url
+ */
+function viddler_api_getthumbnail($id) {
+  if($id){
+    $details_cache = cache_get('viddler_api_'. $id);
+    $thumbnail_url = $details_cache->thumbnail_url;
+    if($thumbnail_url->data){
+      return $thumbnail_url->data;
+    }
+    else{
+      $details = viddler_api_getdetails($id);
+      if($details){
+        return $details['thumbnail_url'];
+      }
+      else{
+        return false;
+      }
+    }
+  }
+  else{
+    return variable_get('viddler_default_thumbnail_path', '');
+  }
+}
+
+/**
+ * Retrieve token for recording from the web (flash recorder)
+ *
+ * @return record token
+ *   record token is needed for recording from the web
+ */
+function viddler_api_gettoken() {
+  $phpviddlerclass = PHPVIDDLERCLASS;
+  $apikey = variable_get('viddler_apikey', '');
+  $viddler_connect = new $phpviddlerclass();
+  $viddler_connect->apiKey = $apikey;
+  $viddler_session = viddler_api_authenticate();
+  
+  if($viddler_session){
+    $viddler_recordtoken = $viddler_connect->video_getrecordtoken($viddler_session);
+    return $viddler_recordtoken;
+  }
+  else{
+    return false;
+  }
+}
+
+/**
+ * Retrieve embed code for recording from web
+ *
+ * @return html of record to web embed code
+ */
+function viddler_api_getrecordembed() {
+  $phpviddlerclass = PHPVIDDLERCLASS;
+  $viddler_connect = new $phpviddlerclass();
+  $apikey = variable_get('viddler_apikey', '');
+  $viddler_connect->apiKey = $apikey;
+  
+  $viddler_session = viddler_api_authenticate();
+  if($viddler_session){
+    $viddler_recordtoken = viddler_api_gettoken();
+    return $viddler_connect->video_getRecordEmbed($viddler_recordtoken,449,400);
+  }
+  else{
+    return false;
+  }
+}
+
+/**
+ * Delete a video from viddler_videos table and/or viddler.com site if we have permission and setting is checked
+ *
+ * @var $id of video
+ * @return result of delete
+ */
+function viddler_api_deletevideo($id) {
+  if($id){
+    // remove from viddler_videos table to not show in views
+    $result = db_query('DELETE FROM {viddler_videos} WHERE `video_id` = "%s";', $id);
+    if($result){
+      // get viddler user
+      $username = htmlentities(variable_get('viddler_username', ''));
+      // do not delete from viddler site if drupal username is different than the videos viddler username
+      $details = viddler_api_getdetails($id);
+      if($details['username'] == $username){
+        $phpviddlerclass = PHPVIDDLERCLASS;
+        $viddler_connect = new $phpviddlerclass();
+        $apikey = variable_get('viddler_apikey', '');
+        $viddler_connect->apiKey = $apikey;
+        $viddler_session = viddler_api_authenticate();
+        if($viddler_session){
+          $viddler_result = $viddler_connect->video_delete($viddler_session, $id);
+          return $viddler_result;
+        }
+        else{
+          return false;
+        }
+      }
+      else{
+        watchdog('viddler_api','Video could not be deleted because the viddler_username @vidder_username did not match the videos username with video id of @video_id.',array(
+          '@viddler_username' => $username, '@video_id' => $video_id));
+        return false;
+      }
+    }
+    else{
+      return false;
+    }    
+  }
+}
+
+/**
+ * Retrieve details of a video
+ *
+ * @var $id of video
+ * @return array
+ *  video details array
+ */
+function viddler_api_getdetails($id) {
+  $details_cache = cache_get('viddler_api_'. $id);
+  if($details_cache->data){
+    return $details_cache->data;
+  }
+  else{
+    $phpviddlerclass = PHPVIDDLERCLASS;
+    $viddler_connect = new $phpviddlerclass();
+    $apikey = variable_get('viddler_apikey', '');
+    $viddler_connect->apiKey = $apikey;
+    try {
+      $details = $viddler_connect->video_details($id);
+      cache_set('viddler_api_'. $id, $details['video']);
+      return $details['video'];
+    } catch (Exception $e) {
+      if(variable_get('viddler_show_debug', ''))
+        drupal_set_message("Viddler API Get Details Error: " . $e->getMessage() . " Details: " . $e->details . " Method: " . $e->method, 'error');
+      return false;
+    }
+  }
+}
+
+/**
+ * Check video status and see it is ok to get details from viddler api
+ *
+ * @var $id of video
+ * @return true or false
+ */
+function viddler_api_oktoprocess($id){
+  $status = viddler_api_getstatus($id);
+  switch ($status['video_status']['statuscode']){
+    case 4:
+      return true;
+    default:
+      if(variable_get('viddler_show_debug', ''))
+        drupal_set_message("Viddler API Ok to Process: " . $status['video_status']['statusmsg']);
+      return false;
+  }
+}
+
+/**
+ * Retrieve video status
+ *
+ * @var $id of video
+ * @return array
+ *   status of video array
+ */
+function viddler_api_getstatus($id) {
+  $phpviddlerclass = PHPVIDDLERCLASS;
+  $viddler_connect = new $phpviddlerclass();
+  $apikey = variable_get('viddler_apikey', '');
+  $viddler_connect->apiKey = $apikey;
+  try {
+    $status = $viddler_connect->video_status($id);
+    return $status;
+  } catch (Exception $e) {
+    if(variable_get('viddler_show_debug', ''))
+      drupal_set_message("Viddler API Get Status Error: " . $e->getMessage() . " Details: " . $e->details . " Method: " . $e->method, 'error');
+    return false;
+  }
+}
+
+/**
+ * Update viddler_videos table with details of video
+ *
+ * @var $uid of user, @nid of node, $id of video
+ * @return true or false
+ */
+function viddler_api_updatedb($uid, $nid, $id) {
+  // do not grab details if we are queued in cron
+  if(!viddler_api_checkcron($id)){
+    $details = viddler_api_getdetails($id);    
+    if(isset($details->data)){
+      $result = db_query('REPLACE INTO {viddler_videos} (
+        `uid`,
+        `nid`,
+        `video_id`,
+        `author`,
+        `title`,
+        `length_seconds`,
+        `width`,
+        `height`,
+        `description`,
+        `view_count`,
+        `upload_time`,
+        `comment_count`,
+        `tags`,
+        `url`,
+        `thumbnail_url`,
+        `permalink`,
+        `update_time`,
+        `permissions`,
+        `comment_list`,
+        `modified`
+        ) VALUES (
+          %d,
+          %d,
+          "%s",
+          "%s",
+          "%s",
+          %d,
+          %d,
+          %d,
+          "%s",
+          %d,
+          %b,
+          %d,
+          %b,
+          "%s",
+          "%s",
+          "%s",
+          %b,
+          %b,
+          %b,
+          NOW()
+        );',
+        $uid,
+        $nid,
+        $id,
+        $details['author'],
+        $details['title'],
+        $details['length_seconds'],
+        $details['width'],
+        $details['height'],
+        $details['description'],
+        $details['view_count'],
+        date("Y-m-d H:i:s", (int)($details['upload_time']*.001)),
+        $details['comment_count'],
+        serialize($details['tags']),
+        $details['url'],
+        $details['thumbnail_url'],
+        $details['permalink'],
+        $details['update_time'] ? date("Y-m-d H:i:s", (int)($details['update_time'])):'NULL',
+        serialize($details['permissions']),
+        serialize($details['comment_list'])
+        );
+        return true;
+      }
+      else{
+        return false;
+      }
+    }
+    else{
+      return false;
+    }
+}
+
+/**
+ * Upload video to viddler
+ *
+ * @var array with needed values (see http://developers.viddler.com/documentation/api/method-videos-upload/)
+ * @return video id or false
+ */
+function viddler_api_uploadvideo($filename = array()) {
+  $phpviddlerclass = PHPVIDDLERCLASS;
+  $viddler_connect = new $phpviddlerclass();
+  $apikey = variable_get('viddler_apikey', '');
+  $viddler_connect->apiKey = $apikey;
+  
+  $viddler_session = viddler_api_authenticate();
+  if($viddler_session){
+    
+    // TODO: Pass title, description, tags, etc from drupal to viddler.
+    $filearray = array(
+      "api_key" => $apikey,
+      "sessionid" => $viddler_session,
+      "title" => 'Video Upload',
+      "tags" => 'viddler drupal module',
+      "description" => 'Video Description',
+      "make_public" => "1",
+      "file" => $filename,
+      );
+      
+    // Make sure we get best possible upload server
+    $rest = viddler_api_prepareupload();
+    if($rest){
+      $viddler_connect->viddlerREST = $rest['upload']['endpoint'];
+    }
+    try {
+      $details = $viddler_connect->video_upload($filearray);
+      $id = $details['video']['id'];
+      if(viddler_api_oktoprocess($id)){
+        if(variable_get('viddler_show_debug', ''))
+          drupal_set_message("Viddler API Video Upload: Video is available.");
+      }
+      else{
+        viddler_api_updatecron($id);
+        if(variable_get('viddler_show_debug', ''))
+          drupal_set_message("Viddler API Video Upload: Video added to cron to process later. Video will be available in views after processing.");
+      }
+      return $id;
+    } catch (Exception $e) {
+      if(variable_get('viddler_show_debug', ''))
+        drupal_set_message("Viddler API Video Upload Error: " . $e->getMessage() . " Details: " . $e->details . " Method: " . $e->method, 'error');
+      return false;
+    }
+  }
+  else{
+    return false;
+  }
+}
+
+/**
+ * Retrieve better upload server for uploading a video
+ *
+ * @return url or false
+ */
+function viddler_api_prepareupload(){
+  $phpviddlerclass = PHPVIDDLERCLASS;
+  $viddler_connect = new $phpviddlerclass();
+  $apikey = variable_get('viddler_apikey', '');
+  $viddler_connect->apiKey = $apikey;
+  
+  $viddler_session = viddler_api_authenticate();
+  if($viddler_session){
+    $rest = $viddler_connect->video_prepareUpload($viddler_session);
+    return $rest;
+  }
+  else{
+    return false;
+  }
+}
+
+/**
+ * Retrieve better upload server for uploading a video
+ *
+ * @var $url of viddler video
+ * @return video id or false
+ */
+
+function viddler_api_getidbyurl($url){
+  $phpviddlerclass = PHPVIDDLERCLASS;
+  $viddler_connect = new $phpviddlerclass();
+  $apikey = variable_get('viddler_apikey', '');
+  $viddler_connect->apiKey = $apikey;
+  try{
+    $details = $viddler_connect->video_detailsbyurl($url);
+    if($details['video']){
+      cache_set('viddler_api_'. $details['video']['id'], $details['video']);
+      return $details['video']['id'];
+    }
+    else{
+      return false;
+    }
+  } catch (Exception $e) {
+    if(variable_get('viddler_show_debug', ''))
+      drupal_set_message("Viddler API Get Video by URL Error: " . $e->getMessage(), 'error');
+    return false;
+  }
+}
+
+/**
+ * Add or delete video to viddler_cron table
+ *
+ * @var $id of video, $op to perform
+ * @return true or false
+ */
+
+function viddler_api_updatecron($id, $op = 'update') {
+  if($id){
+    switch ($op){
+      case 'delete':
+        $result = db_query('DELETE FROM {viddler_cron} WHERE `video_id` = "%s";', $id);
+        if($result){
+          return true;
+        }
+        else{
+          return false;
+        }
+        break;
+      case 'update':
+      default:
+        $result = db_query('REPLACE INTO {viddler_cron} SET `video_id` = "%s", `modified` = NOW();', $id);
+        if($result){
+          return true;
+        }
+        else{
+          return false;
+        }      
+        break;
+    }
+    }
+  else{
+    return false;
+  }
+}
+
+/**
+ * Check if a video is queued in the viddler_cron table
+ *
+ * @var $id of video
+ * @return true or false
+ */
+
+function viddler_api_checkcron($id) {
+  $result = db_query('SELECT video_id FROM {viddler_cron} WHERE video_id = "%s"', $id);
+  if($result){
+    return true;
+  }
+  else{
+    return false;
+  }
+}
+
+/**
+ * Set details of a video
+ *
+ * @var array with needed values (see http://developers.viddler.com/documentation/api/method-videos-setdetails/)
+ * @return video id or false
+ */
+function viddler_api_setdetails($details = array()) {
+  $phpviddlerclass = PHPVIDDLERCLASS;
+  $viddler_connect = new $phpviddlerclass();
+  $apikey = variable_get('viddler_apikey', '');
+  $viddler_connect->apiKey = $apikey;
+  
+  $viddler_session = viddler_api_authenticate();
+  if($viddler_session){    
+    try {
+      $detailsarray = $viddler_connect->video_setdetails($details);
+      if($detailsarray['video']){
+        cache_set('viddler_api_'. $detailsarray['video']['id'], $detailsarray['video']);
+        return $detailsarray['video']['id'];
+      }
+    } catch (Exception $e) {
+      if(variable_get('viddler_show_debug', ''))
+        drupal_set_message("Viddler API Video Upload Error: " . $e->getMessage() . " Details: " . $e->details . " Method: " . $e->method, 'error');
+      return false;
+    }
+  }
+  else{
+    return false;
+  }
+}

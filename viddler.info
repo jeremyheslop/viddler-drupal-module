@@ -1,0 +1,7 @@
+; $Id$
+name = Viddler
+description = "Viddler CCK and Views Integration"
+core = 6.x
+package = Viddler
+dependencies[] = viddler_api
+package[] = Views

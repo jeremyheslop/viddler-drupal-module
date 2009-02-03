@@ -1,0 +1,6 @@
+; $Id$
+name = Viddler API
+description = "Viddler API"
+core = 6.x
+package = Viddler
+dependencies[] = content

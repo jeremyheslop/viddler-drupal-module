@@ -1,0 +1,1222 @@
+<?php
+// $Id$
+/**
+ * @file
+ * Enabling Viddler with CCK and Views
+ *
+ * @author Jeremy Heslop (www.omnitechpro.com)
+ */
+
+/**
+ * Implementation of hook_menu().
+ */
+define('VIDDLER_DEFAULT_VIDEO_WIDTH', 430);
+define('VIDDLER_DEFAULT_VIDEO_HEIGHT', 365);
+define('VIDDLER_DEFAULT_PREVIEW_WIDTH', 270);
+define('VIDDLER_DEFAULT_PREVIEW_HEIGHT', 232);
+define('VIDDLER_DEFAULT_THUMBNAIL_WIDTH', 114);
+define('VIDDLER_DEFAULT_THUMBNAIL_HEIGHT', 86);
+
+function viddler_menu() {
+  $items['admin/content/viddler'] = array(
+    'file' => 'viddler.admin.inc',
+    'title' => 'Viddler configuration',
+    'description' => 'Configure Viddler: Allow content types to use a global username and set API keys, etc.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('viddler_settings'),
+    'access arguments' => array('administer site configuration'),
+  );
+
+  $items['viddler/record_again'] = array(
+    'page callback' => 'viddler_record_again_js',
+    'access arguments' => array('record via webcam'),
+    'type'  => MENU_CALLBACK,
+  );
+  
+  $items['viddler/upload_video'] = array(
+    'page callback' => 'viddler_upload_js',
+    'access arguments' => array('upload video'),
+    'page arguments' => array(2,3,4),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+/** 
+* Implementation of hook_perm().
+*/
+function viddler_perm() {
+  return array('record via webcam', 'upload video');
+}
+
+/**
+ * AHAH callback to re-show embedded record screen
+ */
+function viddler_record_again_js() {
+  $output = viddler_api_getrecordembed();
+  drupal_json(array('status' => TRUE, 'data' => $output));
+  // drupal_to_js(array('status' => TRUE, 'data' => $output));
+}
+
+/**
+ * AHAH callback for uploads
+ */
+function viddler_upload_js($type_name, $field_name, $delta) {
+  $field = content_fields($field_name, $type_name);
+  
+  if (empty($field) || empty($_POST['form_build_id'])) {
+    // Invalid request.
+    print drupal_to_js(array('data' => ''));
+    exit;
+  }
+  
+  // Build the new form.
+  $form_state = array('submitted' => FALSE);
+  $form_build_id = $_POST['form_build_id'];
+  $form = form_get_cache($form_build_id, $form_state);
+  
+  if (!$form) {
+    // Invalid form_build_id.
+    print drupal_to_js(array('data' => ''));
+    exit;
+  }
+  
+  // form_get_cache() doesn't yield the original $form_state,
+  // but form_builder() does. Needed for retrieving the file array.
+  $built_form = $form;
+  $built_form_state = $form_state;
+  
+  $built_form += array('#post' => $_POST);
+  $built_form = form_builder($_POST['form_id'], $built_form, $built_form_state);
+  
+  // Clean ids, so that the same element doesn't get a different element id
+  // when rendered once more further down.
+  form_clean_id(NULL, TRUE);
+  
+  // Ask CCK for the replacement form element. Going through CCK gets us
+  // the benefit of nice stuff like '#required' merged in correctly.
+  module_load_include('inc', 'content', 'includes/content.node_form');
+  $field_element = content_field_form($form, $built_form_state, $field, $delta);
+  $delta_element = $field_element[$field_name][0]; // there's only one element in there
+  
+  // Add the new element at the right place in the form.
+  if (module_exists('fieldgroup') && ($group_name = _fieldgroup_field_get_group($type_name, $field_name))) {
+    $form[$group_name][$field_name][$delta] = $delta_element;
+  }
+  else {
+    $form[$field_name][$delta] = $delta_element;
+  }
+  
+  // Write the (unbuilt, updated) form back to the form cache.
+  form_set_cache($form_build_id, $form, $form_state);
+  
+  // Render the form for output.
+  $form += array(
+    '#post' => $_POST,
+    '#programmed' => FALSE,
+  );
+  drupal_alter('form', $form, array(), 'viddler_upload_js');
+  $form_state = array('submitted' => FALSE);
+  $form = form_builder('viddler_upload_js', $form, $built_form_state);
+  $field_form = empty($group_name) ? $form[$field_name] : $form[$group_name][$field_name];
+  
+  // We add a div around the new content to tell AHAH to let this fade in.
+  $field_form[$delta]['#prefix'] = '<div class="ahah-new-content">';
+  $field_form[$delta]['#suffix'] = '</div>';
+  
+  $upload_name = $field_form[$delta]['#field_name'] .'_'. $field_form[$delta]['#delta'];
+  if (!empty($_FILES['files']['name'][$upload_name])) {
+    // $file = file_save_upload($upload_name, $validators = array(), $dest = FALSE, $replace = FILE_EXISTS_RENAME);
+    $video_id = viddler_api_uploadvideo($_FILES['files']['tmp_name'][$upload_name]);
+    if($video_id){
+      $field_form[$delta]['video_id']['#value'] = $video_id;
+      $field_form[$delta]['upload_video']['#suffix'] = '<div id="'. $field_form[$delta]['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper status">The video has been uploaded successfully and will be saved once you save this form.</div>';
+    }
+    else{
+      $field_form[$delta]['upload_video']['#suffix'] = '<div id="'. $field_form[$delta]['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper error">The video did not submit!</div>';      
+    }
+  }
+  else{
+      $field_form[$delta]['upload_video']['#suffix'] = '<div id="'. $field_form[$delta]['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper error">Nothing to upload. Please select a file and then click on Upload.</div>';      
+    
+  }
+  
+  $output = theme('status_messages') . drupal_render($field_form[$delta]);
+    
+  // AHAH is not being nice to us and doesn't know the "other" button (that is,
+  // either "Upload" or "Delete") yet. Which in turn causes it not to attach
+  // AHAH behaviours after replacing the element. So we need to tell it first.
+  $javascript = drupal_add_js(NULL, NULL);
+  if (isset($javascript['setting'])) {
+    $output .= '<script type="text/javascript">jQuery.extend(Drupal.settings, '. drupal_to_js(call_user_func_array('array_merge_recursive', $javascript['setting'])) .');</script>';
+  }
+  
+  //TODO: Check for if (!empty($_POST['js'])) { and redirect via drupal_goto to appropriate page
+
+  // For some reason, file uploads don't like drupal_json() with its manual
+  // setting of the text/javascript HTTP header. So use this one instead.
+  $GLOBALS['devel_shutdown'] = false;
+  print drupal_to_js(array('status' => TRUE, 'data' => $output));
+  exit;
+}
+
+/**
+ * Start of CCK Specific Code
+ */
+
+/**
+ * Implementation of hook_theme().
+ */
+function viddler_theme() {
+  return array(
+    'viddler' => array(
+      'arguments' => array('element' => NULL), ),
+    'viddler_video_embed' => array(
+      'arguments' => array('element' => NULL), ),
+    'viddler_video_video' => array(
+      'arguments' => array('element' => NULL), ),
+    'viddler_video_preview' => array(
+      'arguments' => array('element' => NULL), ),
+    'viddler_video_thumbnail' => array(
+      'arguments' => array('element' => NULL), ),
+    'viddler_video_update_view_detail' => array(
+      'arguments' => array('element' => NULL), ),
+    'viddler_formatter_default' => array(
+      'arguments' => array('element' => NULL), 'function' => 'theme_viddler_formatter_default'),
+    'viddler_formatter_video_embed' => array(
+      'arguments' => array('element' => NULL), 'function' => 'theme_viddler_formatter_video_embed'),
+    'viddler_formatter_video_video' => array(
+      'arguments' => array('element' => NULL), 'function' => 'theme_viddler_formatter_video_video'),
+    'viddler_formatter_video_preview' => array(
+      'arguments' => array('element' => NULL), 'function' => 'theme_viddler_formatter_video_preview'),
+    'viddler_formatter_video_thumbnail' => array(
+      'arguments' => array('element' => NULL), 'function' => 'theme_viddler_formatter_video_thumbnail'),
+    'viddler_formatter_video_update_view_detail' => array(
+      'arguments' => array('element' => NULL), 'function' => 'theme_viddler_formatter_video_update_view_detail'),
+  );
+}
+
+/**
+ * Implementation of hook_field_info().
+ */
+function viddler_field_info() {
+  return array(
+    'viddler_video' => array(
+      'label' => 'Viddler Video',
+      'description' => t('Record and display videos in nodes and views.'),
+    ),
+  );
+}
+
+/**
+ * Implementation of hook_field_settings().
+ */
+function viddler_field_settings($op, $field) {
+  switch ($op) {
+    case 'form':
+      $form = array();
+      $form['allowed_values_fieldset'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Allowed values'),
+        '#collapsible' => TRUE,
+        '#collapsed' => TRUE,
+      );
+      $form['allowed_values_fieldset']['allowed_values'] = array(
+        '#type' => 'textarea',
+        '#title' => t('Allowed values list'),
+        '#default_value' => !empty($field['allowed_values']) ? $field['allowed_values'] : '',
+        '#required' => FALSE,
+        '#rows' => 10,
+        '#description' => t('The possible values this field can contain. Enter one value per line, in the format key|label. The key is the value that will be stored in the database, and it must match the field storage type (%type). The label is optional, and the key will be used as the label if no label is specified.<br />Allowed HTML tags: @tags', array('%type' => $field['type'], '@tags' => _content_filter_xss_display_allowed_tags())),
+      );
+      $form['allowed_values_fieldset']['advanced_options'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('PHP code'),
+        '#collapsible' => TRUE,
+        '#collapsed' => empty($field['allowed_values_php']),
+      );
+      if (user_access('Use PHP input for field settings (dangerous - grant with care)')) {
+        $form['allowed_values_fieldset']['advanced_options']['allowed_values_php'] = array(
+          '#type' => 'textarea',
+          '#title' => t('Code'),
+          '#default_value' => !empty($field['allowed_values_php']) ? $field['allowed_values_php'] : '',
+          '#rows' => 6,
+          '#description' => t('Advanced usage only: PHP code that returns a keyed array of allowed values. Should not include &lt;?php ?&gt; delimiters. If this field is filled out, the array returned by this code will override the allowed values list above.'),
+        );
+      }
+      else {
+        $form['allowed_values_fieldset']['advanced_options']['markup_allowed_values_php'] = array(
+          '#type' => 'item',
+          '#title' => t('Code'),
+          '#value' => !empty($field['allowed_values_php']) ? '<code>'. check_plain($field['allowed_values_php']) .'</code>' : t('&lt;none&gt;'),
+          '#description' => empty($field['allowed_values_php']) ? t("You're not allowed to input PHP code.") : t('This PHP code was set by an administrator and will override the allowed values list above.'),
+        );
+      }
+      
+      return $form;
+
+    case 'save':
+      return array('allowed_values', 'allowed_values_php');
+
+    case 'database columns':
+      $columns = array(
+        'video_id' => array('type' => 'varchar', 'length' => 64, 'not null' => TRUE, 'not null' => FALSE, 'sortable' => TRUE),
+        // 'data' => array('type' => 'text', 'size' => 'big', 'not null' => TRUE, 'not null' => FALSE, 'sortable' => FALSE),
+      );
+      return $columns;
+
+    case 'views data':
+      $allowed_values = content_allowed_values($field);
+      if (count($allowed_values) || 1) {
+        $data = content_views_field_views_data($field);
+        $db_info = content_database_info($field);
+        $table_alias = content_views_tablename($field);
+
+        // Filter: Add a 'many to one' filter.
+        $copy = $data[$table_alias][$field['field_name'] .'_video_id'];
+        $copy['title'] = t('@label (!name) - Allowed values', array('@label' => t($field['widget']['label']), '!name' => $field['field_name']));
+        $copy['filter']['handler'] = 'content_handler_filter_many_to_one';
+        unset($copy['field'], $copy['argument'], $copy['sort']);
+        $data[$table_alias][$field['field_name'] .'_value_many_to_one'] = $copy;
+        // Argument : swap the handler to the 'many to one' operator.
+        $data[$table_alias][$field['field_name'] .'_video_id']['argument']['handler'] = 'content_handler_argument_many_to_one';
+
+        // Add a relationship for related file.
+        $data[$table_alias][$field['field_name'] .'_video_id']['relationship'] = array(
+          'base' => 'viddler_videos',
+          'field' => $db_info['columns']['video_id']['column'],
+          'handler' => 'content_handler_relationship',
+        );
+        return $data;
+      }
+  }
+}
+
+/**
+ * Implementation of hook_field().
+ */
+function viddler_field($op, &$node, $field, &$items, $teaser, $page) {
+  switch ($op) {
+    case 'insert':
+    case 'update':
+      if (is_array($items)) {
+        foreach ($items as $delta => $item) {
+          $video_id = $items[$delta]['video_id'];
+          if($video_id){
+            viddler_api_updatedb($node->uid, $node->nid, $video_id);
+          }
+        }
+      }
+      break;
+      
+    case 'delete':
+      // Only delete associated viddler video if variable is set on admin/content/viddler page.
+      if(variable_get('viddler_delete_allowed', '')){
+        
+        // Node is being deleted; delete associated video data.
+        if (is_array($items)) {
+          foreach ($items as $delta => $item) {
+            global $user;        
+            $video_id = $items[$delta]['video_id'];
+            $result = viddler_api_deletevideo($video_id);
+            if($result){
+              watchdog('viddler','Video deleted by @user with node @nid with video id of @video_id.',array(
+                '@user' => $user->name, '@nid' => $node->nid, '@video_id' => $video_id));
+            }
+            else {
+              watchdog('viddler','Video NOT deleted by @user with node @nid with video id of @video_id.',array(
+                '@user' => $user->name, '@nid' => $node->nid, '@video_id' => $video_id));
+            }
+          }
+        }
+      }
+      break;
+
+    case 'presave':
+      // If we get a url process it and get the video id then set the video_id form field
+      if (is_array($items)) {
+        foreach ($items as $delta => $item) {
+          if(preg_match("/^[a-zA-Z]+[:\/\/]+[A-Za-z0-9\-_]+\\.+[A-Za-z0-9\.\/%&=\?\-_]+$/i", $item['url_id'])){
+            $video_id = viddler_api_getidbyurl($item['url_id']);
+            if($video_id && empty($item['video_id'])){
+              $items[$delta]['video_id'] = $video_id;
+            }
+          }
+        }
+      }
+    break;
+    
+    case 'validate':      
+      $allowed_values = content_allowed_values($field);
+      if (is_array($items)) {
+        foreach ($items as $delta => $item) {
+          $error_element = isset($item['_error_element']) ? $item['_error_element'] : '';
+          if (is_array($item) && isset($item['_error_element'])) unset($item['_error_element']);
+          if (!empty($item['video_id'])) {
+            if (count($allowed_values) && !array_key_exists($item['video_id'], $allowed_values)) {
+              form_set_error($error_element, t('%name: illegal value.', array('%name' => t($field['widget']['label']))));
+            }
+            if (!empty($field['max_length']) && drupal_strlen($item['value']) > $field['max_length']) {
+              form_set_error($error_element, t('%name: the value may not be longer than %max characters.', array('%name' => $field['widget']['label'], '%max' => $field['max_length'])));
+            }
+          }
+        }
+      }
+      return $items;
+
+    case 'sanitize':
+      foreach ($items as $delta => $item) {
+        $items[$delta]['#viddler_field'] = $field;
+      }
+      break;
+  }
+}
+
+/**
+ * Implementation of hook_content_is_empty().
+ */
+function viddler_content_is_empty($item, $field) {
+  return empty($item['video_id']);
+}
+
+/**
+ * Implementation of hook_field_formatter_info().
+ */
+function viddler_field_formatter_info() {
+  $types = array('viddler_video', );
+  return array(
+    'default' => array(
+      'label' => t('Default'),
+      'field types' => $types,
+      ),
+    'video_video' => array(
+      'label' => t('Full Size Video'),
+      'field types' => $types,
+    ),
+    'video_preview' => array(
+      'label' => t('Preview Video'),
+      'field types' => $types,
+    ),
+    'video_thumbnail' => array(
+      'label' => t('Image Thumbnail'),
+      'field types' => $types,
+    ),
+    'video_embed' => array(
+      'label' => t('Embed Code'),
+      'field types' => $types,
+    ),
+    'video_update_view_detail' => array(
+      'label' => t('Update View Detail'),
+      'field types' => $types,
+    ),
+  );
+}
+
+/**
+ * Theme function for 'default' formatter.
+ */
+function theme_viddler_formatter_default($element) {
+  return theme('viddler_formatter_video_video', $element);
+}
+
+/**
+ * Theme function for 'video_video' formatter.
+ */
+function theme_viddler_formatter_video_video($element) {
+  $field = content_fields($element['#field_name'], $element['#type_name']);
+  $width = $width ? $width : ($field['widget']['video_width'] ? $field['widget']['video_width'] : variable_get('viddler_default_video_width', VIDDLER_DEFAULT_VIDEO_WIDTH));
+  $height = $height ? $height : ($field['widget']['video_height'] ? $field['widget']['video_height'] : variable_get('viddler_default_video_height', VIDDLER_DEFAULT_VIDEO_HEIGHT));
+  $autoplay = $autoplay ? $autoplay : $field['widget']['video_autoplay'];
+  $id = $element['#item']['video_id'];
+  return viddler_api_video_getembed($id,'player',$width,$height,$autoplay,$options = false);
+}
+
+/**
+ * Theme function for 'video_preview' formatter.
+ */
+function theme_viddler_formatter_video_preview($element) {  
+  $field = content_fields($element['#field_name'], $element['#type_name']);
+  $width = $width ? $width : ($field['widget']['preview_width'] ? $field['widget']['preview_width'] : variable_get('viddler_default_preview_width', VIDDLER_DEFAULT_PREVIEW_WIDTH));
+  $height = $height ? $height : ($field['widget']['preview_height'] ? $field['widget']['preview_height'] : variable_get('viddler_default_preview_height', VIDDLER_DEFAULT_PREVIEW_HEIGHT));
+  $autoplay = $autoplay ? $autoplay : $field['widget']['preview_autoplay'];
+  $id = $element['#item']['video_id'];
+  return viddler_api_video_getembed($id,'simple',$width,$height,$autoplay,$options = false);
+}
+
+/**
+ * Theme function for 'video_thumbnail' formatter.
+ */
+function theme_viddler_formatter_video_thumbnail($element) {
+  $id = $element['#item']['video_id'];
+  $node = $element['#node'];
+  $field = content_fields($element['#field_name'], $element['#type_name']);
+  $thumbnail_url = viddler_api_getthumbnail($id);
+  $link_title = $details['video']['title'];
+    
+  if (!$thumbnail_url) {
+    $default_thumbnail_url = $field['widget']['thumbnail_default_path'] ? $field['widget']['thumbnail_default_path'] : variable_get('viddler_default_thumbnail_path', NULL);
+    if ($default_thumbnail_url) {
+      $thumbnail_url = base_path() . $default_thumbnail_url;
+    }
+  }
+
+  //TODO: Just set url to node id for now, will have options for setting as permalink or other setting later
+  // $link_url = isset($link_url) ? $link_url : 'node/'. $node->nid;
+  $link_url = 'node/'. $node->nid;
+  $link_title = isset($link_title) ? $link_title : t('See video');
+  $image_title = isset($image_title) ? $image_title : $link_title;
+  $image_alt = isset($image_alt) ? $image_alt : $link_title;
+
+  if ($thumbnail_url) {
+    $width = isset($width) ? $width : NULL;
+    $width = isset($width) ? $width : ($field['widget']['thumbnail_width'] ? $field['widget']['thumbnail_width'] : variable_get('viddler_default_thumbnail_width', VIDDLER_DEFAULT_THUMBNAIL_WIDTH));
+    $height = isset($height) ? $height : NULL;
+    $height = isset($height) ? $height : ($field['widget']['thumbnail_height'] ? $field['widget']['thumbnail_height'] : variable_get('viddler_default_thumbnail_height', VIDDLER_DEFAULT_THUMBNAIL_HEIGHT));
+    // TODO: thickbox
+    if ($no_link) { //thickbox requires the thumbnail returned without the link
+      $output = '<img src="'. $thumbnail_url .'" width="'. $width  .'" height="'. $height  .'" alt="'. $image_alt .'" title="'. $image_title .'" />';
+    }
+    else {
+      $output = l('<img src="'. $thumbnail_url .'" width="'. $width  .'" height="'. $height  .'" alt="'. $image_alt .'" title="'. $image_title .'" />', $link_url, array('html'=> TRUE));
+    }
+  }
+  else {
+     // if all else fails, then just print a 'see video' link.
+    if ($no_link) {
+      $output = ''; //thickbox won't work without a thumbnail
+    }
+    else {
+      $output = l($link_title, $link_url);
+    }
+  }
+
+  return $output;
+}
+
+/**
+ * Theme function for 'update_view_detail' formatter.
+ */
+function theme_viddler_formatter_video_update_view_detail($element) {
+  $id = $element['#item']['video_id'];
+  $node = $element['#node'];
+  $fullnode = node_load($node->nid);
+  if(viddler_api_updatedb($fullnode->uid, $node->nid, $id)){
+    $output = t("Video with id @id is updated", array('@id' => $id)); 
+  }
+  else{
+    $output = t("Video was not update.");
+  }
+  return $output;
+}
+
+
+/**
+ * Theme function for 'embed' formatter.
+ */
+function theme_viddler_formatter_video_embed($element) {
+  $output = drupal_get_form('viddler_embed_form', $element);
+  return $output;
+}
+   
+function viddler_embed_form($arg, $element) {
+  $options = $element['#options'];
+  $id = $element['#item']['video_id'];
+  $text = viddler_api_video_getembed($id);
+  $title = $title ? $title : t('Embed Code');
+  $description = $description ? $description : t('To embed this video on your own site, simply copy and paste the html code from this text area.');
+  
+  $form = array();
+  $form['viddler_embed'] = array(
+    '#type' => 'textarea',
+    '#title' => $title,
+    '#description' => $description,
+    '#default_value' => $text,
+  );
+
+  return $form;
+}
+
+/*
+ * helper function that can be used to filter field content
+ */
+function _viddler_allowed_values($element) {
+  $field = content_fields($element['#field_name'], $element['#type_name']);
+  if (($allowed_values = content_allowed_values($field)) && isset($allowed_values[$element['#item']['video_id']])) {
+    return $allowed_values[$element['#item']['video_id']];
+  }
+}
+
+/**
+ * Implementation of hook_widget_info().
+ *
+ * Here we indicate that the content module will handle
+ * the default value and multiple values for these widgets.
+ *
+ * Callbacks can be omitted if default handing is used.
+ * They're included here just so this module can be used
+ * as an example for custom modules that might do things
+ * differently.
+ */
+function viddler_widget_info() {
+  return array(
+    'viddler' => array(
+      'label' => t('Video'),
+      'field types' => array('viddler_video', ),
+      'multiple values' => CONTENT_HANDLE_CORE,
+      'callbacks' => array(
+        'default value' => CONTENT_CALLBACK_DEFAULT,
+      ),
+    ),
+  );
+}
+
+/**
+ * Implementation of FAPI hook_elements().
+ *
+ * Any FAPI callbacks needed for individual widgets can be declared here,
+ * and the element will be passed to those callbacks for processing.
+ *
+ * Drupal will automatically theme the element using a theme with
+ * the same name as the hook_elements key.
+ *
+ * Autocomplete_path is not used by viddler_widget but other widgets can use it
+ * (see nodereference and userreference).
+ */
+function viddler_elements() {
+  return array(
+    'viddler' => array(
+      '#input' => TRUE,
+      '#columns' => array('video_id'), '#delta' => 0,
+      '#process' => array('viddler_process'),
+      '#value_callback' => 'viddler_widget_value',
+    ),    
+  );
+}
+
+/**
+ * Implementation of hook_widget().
+ *
+ * Attach a single form element to the form. It will be built out and
+ * validated in the callback(s) listed in hook_elements. We build it
+ * out in the callbacks rather than here in hook_widget so it can be
+ * plugged into any module that can provide it with valid
+ * $field information.
+ *
+ * Content module will set the weight, field name and delta values
+ * for each form element. This is a change from earlier CCK versions
+ * where the widget managed its own multiple values.
+ *
+ * If there are multiple values for this field, the content module will
+ * call this function as many times as needed.
+ *
+ * @param $form
+ *   the entire form array, $form['#node'] holds node information
+ * @param $form_state
+ *   the form_state, $form_state['values'][$field['field_name']]
+ *   holds the field's form values.
+ * @param $field
+ *   the field array
+ * @param $items
+ *   array of default values for this field
+ * @param $delta
+ *   the order of this item in the array of subelements (0, 1, 2, etc)
+ *
+ * @return
+ *   the form item for a single element for this field
+ */
+function viddler_widget(&$form, &$form_state, $field, $items, $delta = 0) {
+  $element = array(
+    '#type' => $field['widget']['type'],
+    '#default_value' => isset($items[$delta]) ? $items[$delta] : '',
+  );
+  return $element;
+}
+
+/**
+ * Implementation of hook_widget_settings().
+ */
+function viddler_widget_settings($op, $widget) {
+  switch ($op) {
+    case 'form':
+      $form = array();
+      $form['record'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Video Record Settings'),
+        '#description' => t('These settings control how a user add a Viddler video for this content type'),
+        '#collapsible' => TRUE,
+        '#collapsed' => FALSE,
+      );
+      $form['record']['record_webcam'] = array( 
+        '#type' => 'checkbox',
+        '#title' => t('Record with Webcam'),
+        '#default_value' => empty($widget['record_webcam']) ? variable_get('viddler_record_webcam', FALSE) : $widget['record_webcam'],
+      );
+      $form['record']['upload_video'] = array( 
+        '#type' => 'checkbox',
+        '#title' => t('Upload a video'),
+        '#default_value' => empty($widget['upload_video']) ? variable_get('viddler_upload_video', FALSE) : $widget['upload_video'],
+      );
+      $form['record']['vid_url'] = array( 
+        '#type' => 'checkbox',
+        '#title' => t('Input url'),
+        '#default_value' => empty($widget['vid_url']) ? variable_get('viddler_vid_url', FALSE) : $widget['vid_url'],
+      );
+      $form['record']['vid_id'] = array( 
+        '#type' => 'checkbox',
+        '#title' => t('Input id'),
+        '#default_value' => empty($widget['vid_id']) ? variable_get('viddler_vid_id', FALSE) : $widget['vid_id'],
+      );
+            
+      $width = variable_get('viddler_default_video_width', VIDDLER_DEFAULT_VIDEO_WIDTH);
+      $height = variable_get('viddler_default_video_height', VIDDLER_DEFAULT_VIDEO_HEIGHT);
+      $form['video'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Video Display Settings'),
+        '#description' => t('These settings control how this video is displayed in its full size, which defaults to @widthx@height.', array('@width' => $width, '@height' => $height)),
+        '#collapsible' => TRUE,
+        '#collapsed' => FALSE,
+      );
+      $form['video']['video_width'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Video display width'),
+        '#default_value' => empty($widget['video_width']) ? $width : $widget['video_width'],
+        '#required' => TRUE,
+        '#description' => t('The width of the video. It defaults to @width.', array('@width' => $width)),
+      );
+      $form['video']['video_height'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Video display height'),
+        '#default_value' => empty($widget['video_height']) ? $height : $widget['video_height'],
+        '#required' => TRUE,
+        '#description' => t('The height of the video. It defaults to @height.', array('@height' => $height)),
+      );
+      $form['video']['video_autoplay'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Autoplay'),
+        '#default_value' => empty($widget['video_autoplay']) ? '' : $widget['video_autoplay'],
+        '#description' => t('Automatically begin after the video loads when in its full size.'),
+      );
+
+      $width = variable_get('viddler_default_preview_width', VIDDLER_DEFAULT_PREVIEW_WIDTH);
+      $height = variable_get('viddler_default_preview_height', VIDDLER_DEFAULT_PREVIEW_HEIGHT);
+      $form['preview'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Video Preview Settings'),
+        '#description' => t('These settings control how this video is displayed in its preview size, which defaults to @widthx@height.', array('@width' => $width, '@height' => $height)),
+        '#collapsible' => TRUE,
+        '#collapsed' => FALSE,
+      );
+      $form['preview']['preview_width'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Video preview width'),
+        '#default_value' => empty($widget['preview_width']) ? $width : $widget['preview_width'],
+        '#required' => TRUE,
+        '#description' => t('The width of the preview video. It defaults to @width.', array('@width' => $width)),
+      );
+      $form['preview']['preview_height'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Video preview height'),
+        '#default_value' => empty($widget['preview_height']) ? $height : $widget['preview_height'],
+        '#required' => TRUE,
+        '#description' => t('The height of the preview video. It defaults to @height.', array('@height' => $height)),
+      );
+      $form['preview']['preview_autoplay'] = array(
+        '#type' => 'checkbox',
+        '#title' => t('Autoplay'),
+        '#default_value' => empty($widget['preview_autoplay']) ? '' : $widget['preview_autoplay'],
+        '#description' => t('Automatically begin after the video loads when in its preview size.'),
+      );
+
+      $width = variable_get('viddler_default_thumbnail_width', VIDDLER_DEFAULT_THUMBNAIL_WIDTH);
+      $height = variable_get('viddler_default_thumbnail_height', VIDDLER_DEFAULT_THUMBNAIL_HEIGHT);
+      $form['tn'] = array(
+        '#type' => 'fieldset',
+        '#title' => t('Thumbnail'),
+        '#description' => t('When displayed as a thumbnail, these settings control the image returned. An API key is required for displaying the videos thumbnail. More information from the <a href="@settings">settings page</a>. The default size for thumbnails is @widthx@height.', array('@settings' => url('admin/content/viddler'), '@width' => $width, '@height' => $height)),
+        '#collapsible' => TRUE,
+        '#collapsed' => FALSE,
+      );
+      $form['tn']['thumbnail_width'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Thumbnail width'),
+        '#default_value' => empty($widget['thumbnail_width']) ? $width : $widget['thumbnail_width'],
+        '#required' => TRUE,
+        '#description' => t('The width of the thumbnail. It defaults to @width.', array('@width' => $width)),
+      );
+      $form['tn']['thumbnail_height'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Thumbnail height'),
+        '#default_value' => empty($widget['thumbnail_height']) ? $height : $widget['thumbnail_height'],
+        '#required' => TRUE,
+        '#description' => t('The height of the thumbnail. It defaults to @height.', array('@height' => $height)),
+      );
+      $default_path = variable_get('viddler_default_thumbnail_path', '');
+      $form['tn']['thumbnail_default_path'] = array(
+        '#type' => 'textfield',
+        '#title' => t('Default thumbnail path'),
+        '#default_value' => empty($widget['thumbnail_default_path']) ? $default_path : $widget['thumbnail_default_path'],
+        '#description' => t("Path to a local default thumbnail image for cases when a thumbnail can't be found. For example, you might have a default thumbnail at %files.", array('%files' => 'files/thumbnail.png')) . $tn_desc,
+      );
+      return $form;
+
+    case 'validate':
+      if (!is_numeric($widget['video_width']) || intval($widget['video_width']) != $widget['video_width'] || $widget['video_width'] < 1) {
+        form_set_error('video_width', t('"Video width" must be a positive integer.'));
+      }
+      if (!is_numeric($widget['video_height']) || intval($widget['video_height']) != $widget['video_height'] || $widget['video_height'] < 1) {
+        form_set_error('video_height', t('"Video height" must be a positive integer.'));
+      }
+      if (!is_numeric($widget['preview_width']) || intval($widget['preview_width']) != $widget['preview_width'] || $widget['preview_width'] < 1) {
+        form_set_error('preview_width', t('"Preview width" must be a positive integer.'));
+      }
+      if (!is_numeric($widget['preview_height']) || intval($widget['preview_height']) != $widget['preview_height'] || $widget['preview_height'] < 1) {
+        form_set_error('preview_height', t('"Preview height" must be a positive integer.'));
+      }
+      if (!is_numeric($widget['thumbnail_width']) || intval($widget['thumbnail_width']) != $widget['thumbnail_width'] || $widget['thumbnail_width'] < 1) {
+        form_set_error('thumbnail_width', t('"Thumbnail width" must be a positive integer.'));
+      }
+      if (!is_numeric($widget['thumbnail_height']) || intval($widget['thumbnail_height']) != $widget['thumbnail_height'] || $widget['thumbnail_height'] < 1) {
+        form_set_error('thumbnail_height', t('"Thumbnail height" must be a positive integer.'));
+      }
+    break;
+    
+    case 'save':
+      $columns = array('record_webcam', 'upload_video', 'vid_url', 'vid_id', 'video_width', 'video_height', 'video_autoplay', 'preview_width', 'preview_height', 'preview_autoplay', 'thumbnail_width', 'thumbnail_height', 'thumbnail_default_path', );
+      return $columns;
+  }
+}
+
+/**
+ * Process an individual element.
+ *
+ * Build the form element. When creating a form using FAPI #process,
+ * note that $element['#value'] is already set.
+ *
+ * The $fields array is in $form['#field_info'][$element['#field_name']].
+ */
+function viddler_process($element, $edit, $form_state, $form) {
+  $field_name = $element['#field_name'];
+  $field = $form['#field_info'][$field_name];
+  $field_key  = $element['#columns'][0];
+  $delta = $element['#delta'];
+  
+  // Only show video id text input on "Default value" form under manage fields in the content type area
+  if($element['#name'] == "default_value_widget[" . $field_name. "][" . $delta. "]"){
+    $element[$field_key] = array(
+      '#type' => 'textfield',
+      '#default_value' => isset($element['#value'][$field_key]) ? $element['#value'][$field_key] : NULL,
+      '#size' => !empty($field['widget']['size']) ? $field['widget']['size'] : 60,
+      '#attributes' => array('class' => 'viddler_id'),
+
+      // The following values were set by the content module and need
+      // to be passed down to the nested element.
+      '#title' => $element['#title'],
+      '#description' => $element['#description'],
+      '#required' => $element['#required'],
+      '#field_name' => $element['#field_name'],
+      '#type_name' => $element['#type_name'],
+      '#delta' => $element['#delta'],
+      '#columns' => $element['#columns'],
+    );
+  }
+  else {
+    
+    $video_id_field_name = $element['#name'] . '[' .  $field_key . ']';
+
+    if($field['widget']['record_webcam'] && user_access('record via webcam')){
+      // Add viddler callback javascript if we are allowing recording via webcam http://developers.viddler.com/documentation/articles/howto-record/
+
+      if(!$element['#value'][$field_key]){
+        drupal_add_js( 
+        'function recordDone(username,user_video_number,video_id) {
+          // handle record data
+          $("input[name=\'' . $video_id_field_name . '\']").val(video_id);
+        }', 
+        'inline' 
+        );
+    
+        $element['markup'] = array(
+          '#type' => 'markup',
+          '#value' => viddler_api_getrecordembed(),
+        );
+      }
+      else {
+        $element['markup'] = array(
+          '#type' => 'markup',
+          '#value' => '<div id=\'recordembed-wrapper\'>It looks like you already submitted a video. Would you like to remove that video and try again? ',
+        );
+        $element['record_again'] = array(
+          '#suffix' => "<br style='clear:both;' /></div>",
+          '#type' => 'button',
+          '#value' => 'Record New Video',
+          '#ahah' => array(
+             'path' => 'viddler/record_again',
+             'wrapper' => 'recordembed-wrapper',
+             'method' => 'replace',
+             'progress' => array('type' => 'throbber'),
+           ),
+        );
+      
+      }
+    }
+
+    if($field['widget']['upload_video'] && user_access('upload video')){
+      $element['upload_video'] = array(
+        '#name' => 'files['. $element['#field_name'] .'_'. $element['#delta'] .']',
+        '#type' => 'file',
+        '#title' => t('New Upload'),
+       '#description' => 'Videos need to be in a format that the http://www.viddler.com site can accept',
+        '#attributes' => array(
+          // TODO: add settings for file extensions to limit what kinds of files we can upload
+//          'accept' => implode(',', array_filter(explode(' ', $field['widget']['file_extensions']))),
+        ),
+        '#prefix' => '<div id="'. $element['#id'] .'-upload_video-ahah-wrapper" class="viddler_upload-ahah-wrapper">',
+        '#suffix' => '<div id="'. $element['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper"></div>',
+      );
+      
+      $element['#prefix'] = '<div id="'. $element['#id'] .'-ahah-wrapper" class="viddler-ahah-wrapper">';
+      $element['#suffix'] = '<br style="clear: both; "/></div>';
+      
+      $element['upload_btn'] = array(
+        '#type' => 'submit',
+        '#value' => t('Upload Video'),
+        '#process' => array('form_expand_ahah'),
+        '#submit' => array('node_form_submit_build_node'),
+        '#ahah' => array( // with JavaScript
+           'path' => 'viddler/upload_video/'.   $element['#type_name'] .'/'. $element['#field_name'] .'/'. $element['#delta'],
+           'wrapper' => $element['#id'] .'-ahah-wrapper',
+           'method' => 'replace',
+           'effect' => 'fade',
+        ),
+        '#field_name' => $element['#field_name'],
+        '#delta' => $element['#delta'],
+        '#type_name' => $element['#type_name'],
+        // TODO: add validation for certain types of media to be uploaded
+        // '#upload_validators' => $element['#upload_validators'],
+        '#suffix' => '<br style="clear: both; "/></div>',
+      );
+    }
+          
+    if($field['widget']['vid_url']){
+        $element['url_id'] = array(
+          '#type' => 'textfield',
+          '#value' => isset($element['#value']['url_id']) ? $element['#value']['url_id'] : NULL,
+          '#size' => !empty($field['widget']['size']) ? $field['widget']['size'] : 60,
+          '#attributes' => array('class' => 'viddler_url'),
+          '#title' => 'Enter a url of a Viddler video',
+          '#description' => 'Urls should start with http and look like this http://www.viddler.com/explore/username/videos/10',
+        );   
+      }
+
+    // Show text field or hidden field based on widget setting
+    if($field['widget']['vid_id']){
+      $element[$field_key] = array(
+        '#type' => 'textfield',
+        '#default_value' => isset($element['#value'][$field_key]) ? $element['#value'][$field_key] : NULL,
+        '#size' => !empty($field['widget']['size']) ? $field['widget']['size'] : 60,
+        '#attributes' => array('class' => 'viddler_video_id'),
+
+        // The following values were set by the content module and need
+        // to be passed down to the nested element.
+        '#title' => 'Enter an id of a Viddler video',
+        '#description' => $element['#description'],
+        '#required' => $element['#required'],
+        '#field_name' => $element['#field_name'],
+        '#type_name' => $element['#type_name'],
+        '#delta' => $element['#delta'],
+        '#columns' => $element['#columns'],
+      );
+    }
+    else {
+      $element[$field_key] = array(
+        '#type' => 'hidden',
+        '#default_value' => isset($element['#value'][$field_key]) ? $element['#value'][$field_key] : NULL,
+        '#size' => !empty($field['widget']['size']) ? $field['widget']['size'] : 60,
+        '#attributes' => array('class' => 'viddler_video_id'),
+
+        // The following values were set by the content module and need
+        // to be passed down to the nested element.
+        '#title' => 'Enter an id of a Viddler video',
+        '#description' => $element['#description'],
+        '#required' => $element['#required'],
+        '#field_name' => $element['#field_name'],
+        '#type_name' => $element['#type_name'],
+        '#delta' => $element['#delta'],
+        '#columns' => $element['#columns'],
+      );
+    }
+  }
+
+  // Used so that hook_field('validate') knows where to flag an error.
+  $element['_error_element'] = array(
+    '#type' => 'value',
+    '#value' => implode('][', array_merge($element['#parents'], array($field_key))),
+  );
+
+  return $element;
+}
+
+/**
+ * FAPI theme for an individual text elements.
+ *
+ * The textfield or textarea is already rendered by the
+ * textfield or textarea themes and the html output
+ * lives in $element['#children']. Override this theme to
+ * make custom changes to the output.
+ *
+ * $element['#field_name'] contains the field name
+ * $element['#delta]  is the position of this element in the group
+ */
+function theme_viddler($element) {
+  $children = $element['#children'];
+  return $children;
+}
+
+/**
+ * End of CCK Specific Code
+ */
+
+
+ /**
+  * Implementation of the hook_user()
+  * Add an extra field for the user to enter viddler username and password.
+  */
+// TODO: will associate drupal user with viddler user from profile settings
+// function viddler_user($op, &$edit, &$account, $category = NULL) {
+// }
+
+/**
+ * Implementation of hook_cron().
+ */
+function viddler_cron(){
+  
+  // TODO: - only update cron every 5 minutes to cut down on API calls
+  //       - allow limit to be changed in settings?
+  //       - query by modified time to only update oldest first
+  
+  // check viddler_cron table and update any videos that need details to be updated.
+  //  only grab 15 at a time to limit API calls
+  $result = db_query("SELECT video_id, modified FROM {viddler_cron} ORDER BY `modified` ASC LIMIT 15");
+
+  while ($field = db_fetch_object($result)) {
+    $details = viddler_api_getdetails($field->video_id);
+    if($details['id']){
+      viddler_api_updatecron($details['id'], 'delete');
+    }
+  }
+
+}
+
+/**
+ * Views 2.x Specific Code
+ */
+ 
+ /*
+  * Implementation of hook_views_api().
+  */
+ function viddler_views_api() {
+   return array('api' => 2.0);
+ }
+
+ /*
+  * Implementation of hook_views_data().
+  *
+  * Provides the views module with data about node_kaltura table
+  * Enables the user to add fields to a view and filter/sort by some fields.
+  * Some of the fields have only a field handler, which means they could be added to the "fields" list of the view
+  * Others have a filter handler so the view could be filtered by them
+  *
+  * The structure of the return value applies the views2 api
+  */
+ function viddler_views_data() {
+   $data = array();
+   $data['viddler_videos'] = array(
+     'table' => array(
+       'group' => 'Viddler',
+       'title' => 'Viddler',
+       'help' => t('Table that holds Viddler Video Info'),
+       'base' => array(
+         'field' => 'nid',
+         'title' => 'node id',
+       ),
+       'join' => array(
+         'node' => array(
+           'left_field' => 'nid',
+           'field' => 'nid',
+         ),
+       ),
+     ),
+     'author' => array(
+       'title' => t('Author'),
+       'help' => t(''),
+       'field' => array(
+         'handler' => 'views_handler_field',
+       ),
+       'filter' => array(
+        'handler' => 'views_handler_filter_string',
+       ),
+       'sort' => array(
+         'handler' => 'views_handler_sort',
+       ),
+     ),
+    'length_seconds' => array(
+      'title' => t('Length in Seconds'),
+      'help' => t('See Viddler documentation for values'),
+      'field' => array(
+       'handler' => 'views_handler_field_numeric',
+       'click_sortable' => FALSE,
+      ),
+      'filter' => array(
+       'handler' => 'views_handler_filter_numeric',
+      ),
+      'sort' => array(
+       'handler' => 'views_handler_sort',
+      ),
+    ),
+   'height' => array(
+     'title' => t('Video Height'),
+     'help' => t('See Viddler documentation for values'),
+     'field' => array(
+      'handler' => 'views_handler_field_numeric',
+      'click_sortable' => FALSE,
+     ),
+     'filter' => array(
+      'handler' => 'views_handler_filter_numeric',
+     ),
+     'sort' => array(
+      'handler' => 'views_handler_sort',
+     ),
+   ),
+   'width' => array(
+     'title' => t('Video Width'),
+     'help' => t('See Viddler documentation for values'),
+     'field' => array(
+      'handler' => 'views_handler_field_numeric',
+      'click_sortable' => FALSE,
+     ),
+     'filter' => array(
+      'handler' => 'views_handler_filter_numeric',
+     ),
+     'sort' => array(
+      'handler' => 'views_handler_sort',
+     ),
+   ),
+   'description' => array(
+     'title' => t('Description'),
+     'help' => t(''),
+     'field' => array(
+       'handler' => 'views_handler_field',
+     ),
+     'sort' => array(
+       'handler' => 'views_handler_sort',
+     ),
+   ),
+   'view_count' => array(
+     'title' => t('View Count'),
+     'help' => t('See Viddler documentation for values'),
+     'field' => array(
+      'handler' => 'views_handler_field_numeric',
+      'click_sortable' => FALSE,
+     ),
+     'filter' => array(
+      'handler' => 'views_handler_filter_numeric',
+     ),
+     'sort' => array(
+      'handler' => 'views_handler_sort',
+     ),
+   ),
+   'upload_time' => array(
+     'title' => t('Upload Date/Time'),
+     'help' => t(''),
+     'field' => array(
+       'handler' => 'views_handler_field',
+     ),
+     'sort' => array(
+       'handler' => 'views_handler_sort',
+     ),
+   ),
+   'comment_count' => array(
+     'title' => t('Comment Count'),
+     'help' => t('See Viddler documentation for values'),
+     'field' => array(
+      'handler' => 'views_handler_field_numeric',
+      'click_sortable' => FALSE,
+     ),
+     'filter' => array(
+      'handler' => 'views_handler_filter_numeric',
+     ),
+     'sort' => array(
+      'handler' => 'views_handler_sort',
+     ),
+     
+   ),
+   // 'tags' => array(
+   //   'title' => t('Viddler Tags (serialized array)'),
+   //   'help' => t(''),
+   //   'field' => array(
+   //     'handler' => 'views_handler_field',
+   //   ),
+   // ),
+   'url' => array(
+     'type' => 'varchar',
+     'length' => 255,
+     'not null' => TRUE,
+     'description' => t('Video Url'),
+   ),
+   'thumbnail_url' => array(
+     'type' => 'varchar',
+     'length' => 255,
+     'not null' => TRUE,
+     'description' => t('Thumbnail Url'),
+   ),
+   'permalink' => array(
+     'title' => t('Permalink'),
+     'help' => t(''),
+     'field' => array(
+       'handler' => 'views_handler_field',
+     ),
+     
+   ),
+   'update_time' => array(
+     'title' => t('Update Time'),
+     'help' => t(''),
+     'field' => array(
+       'handler' => 'views_handler_field',
+     ),
+   ),
+   // 'permissions' => array(
+   //   'title' => t('Viddler Video Permissions (serialized array)'),
+   //   'help' => t(''),
+   //   'field' => array(
+   //     'handler' => 'views_handler_field',
+   //   ),
+   // ),
+   // 'comment_list' => array(
+   //   'title' => t('Viddler Video Text and Video Comments (serialized array)'),
+   //   'help' => t(''),
+   //   'field' => array(
+   //     'handler' => 'views_handler_field',
+   //   ),
+   // ),
+  );
+  return $data;
+}
+
+// /*
+//  * views module seems to not load in any logical order, so we need to require some of it's
+//  * files in order to extend some of the classes
+//  *
+//  */
+// require_once(drupal_get_path('module', 'views') .'/includes/base.inc'); 
+// require_once(drupal_get_path('module', 'views') .'/includes/handlers.inc'); 
+// require_once(drupal_get_path('module', 'views') .'/handlers/views_handler_field.inc');
+// require_once(drupal_get_path('module', 'views') .'/handlers/views_handler_filter.inc');
+// require_once(drupal_get_path('module', 'views') .'/handlers/views_handler_filter_in_operator.inc');
+// 
+// /*
+//  * Declaration of new field handler that extends the basic field handler of views module
+//  * We want to theme the thumbnail field ourselvs.
+//  */
+// class views_handler_field_viddler extends views_handler_field {
+// }

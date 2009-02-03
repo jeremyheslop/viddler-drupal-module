@@ -1,0 +1,34 @@
+<?php
+// $Id$
+/**
+ * @file
+ * Installation for viddler module
+ *
+ * @author Jeremy Heslop (www.omnitechpro.com)
+ */
+
+/**
+ * Implementation of hook_install
+ */
+// function viddler_install() {
+// }
+
+/**
+ * Implementation of hook_uninstall
+ */
+// function viddler_uninstall() {
+// }
+
+/**
+ * Implementation of hook_schema
+ */
+// function viddler_schema() {
+// }
+
+/**
+ * Implementation of hook_updateN
+ *
+ */
+// function viddler_update_1() {
+// }
+

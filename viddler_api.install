@@ -1,0 +1,192 @@
+<?php
+// $Id$
+/**
+ * @file
+ * Installation for viddler_api module
+ *
+ * @author Jeremy Heslop (www.omnitechpro.com)
+ */
+
+/**
+ * Implementation of hook_install
+ */
+function viddler_api_install() {
+  drupal_install_schema('viddler_api');
+}
+
+/**
+ * Implementation of hook_uninstall
+ */
+function viddler_api_uninstall() {
+  drupal_uninstall_schema('viddler_api');
+}
+
+/**
+ * Implementation of hook_schema
+ */
+function viddler_api_schema() {
+  $schema['viddler_users'] = array(
+    'description' => t('Connects Drupal users to their Viddler accounts.'),
+    'fields' => array(
+      'uid' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'description' => t('Primary Key: Drupal user ID'),
+      ),
+      'username' => array(
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'description' => t('Viddler Username'),
+      ),
+      'password' => array(
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'description' => t('Viddler Password'),
+      ),
+    ),
+    'primary key' => array('uid'),
+  );
+  $schema['viddler_videos'] = array(
+    'description' => t('Connects Drupal users to the videos they record/upload.'),
+    'fields' => array(
+      'uid' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'description' => t('Primary Key: Drupal user ID'),
+      ),
+      'nid' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'description' => t('Drupal node ID'),
+      ),
+      'video_id' => array(
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'description' => t('Viddler Video ID'),
+      ),
+      'author' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+        'description' => t('Viddler Video Author'),
+      ),
+      'title' => array(
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'description' => t('Viddler Video Title'),
+      ),
+      'length_seconds' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'description' => t('Viddler Video Length in Seconds'),
+      ),
+      'height' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'description' => t('Viddler Video Height'),
+      ),
+      'width' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'description' => t('Viddler Video Width'),
+      ),
+      'description' => array(
+        'type' => 'text',
+        'not null' => TRUE,
+        'description' => t('Viddler Video Description'),
+      ),
+      'view_count' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'description' => t('Viddler Video View Count'),
+      ),
+      'upload_time' => array(
+        'type' => 'datetime',
+        'not null' => TRUE,
+        'description' => t('Viddler Video Upload Time'),
+      ),
+      'comment_count' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'description' => t('Viddler Video Comment Count'),
+      ),
+      'tags' => array(
+        'type' => 'text',
+        'not null' => TRUE,
+        'description' => t('Viddler Tags (serialized array)'),
+      ),
+      'url' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'description' => t('Viddler Video Url'),
+      ),
+      'thumbnail_url' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'description' => t('Viddler Video Thumbnail Url'),
+      ),
+      'permalink' => array(
+        'type' => 'varchar',
+        'length' => 255,
+        'not null' => TRUE,
+        'description' => t('Viddler Video Permalink'),
+      ),
+      'update_time' => array(
+        'type' => 'datetime',
+        'not null' => FALSE,
+        'description' => t('Viddler Video Update Time'),
+      ),
+      'permissions' => array(
+        'type' => 'text',
+        'not null' => TRUE,
+        'description' => t('Viddler Video Permissions (serialized array)'),
+      ),
+      'comment_list' => array(
+        'type' => 'text',
+        'not null' => TRUE,
+        'description' => t('Viddler Video Text and Video Comments (serialized array)'),
+      ),
+      'modified' => array(
+        'type' => 'datetime',
+        'not null' => TRUE,
+        'description' => t('Modified datetime'),
+      ),
+    ),
+    'primary key' => array('uid', 'nid', 'video_id'),
+  );
+  $schema['viddler_cron'] = array(
+    'description' => t('Queues cron to get video details when available.'),
+    'fields' => array(
+      'video_id' => array(
+        'type' => 'varchar',
+        'length' => 64,
+        'not null' => TRUE,
+        'description' => t('Viddler Video ID'),
+      ),
+      'modified' => array(
+        'type' => 'datetime',
+        'not null' => TRUE,
+        'description' => t('Modified datetime'),
+      ),
+    ),
+    'primary key' => array('video_id'),
+  );
+  
+  return $schema;
+}
+
+/**
+ * Implementation of hook_updateN
+ *
+ * Adding a table to map Drupal users to Viddler users
+ */
+function viddler_api_update_1() {
+  viddler_api_install();
+}
+
