@@ -1,4 +1,4 @@
-/* $Id$ */
+/* $Id: README.txt,v 1.1 2009/05/11 20:28:53 jeremyheslop Exp $ */
 
 /*********************/
 Viddler Drupal Module

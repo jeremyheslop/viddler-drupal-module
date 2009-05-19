@@ -1,5 +1,5 @@
 <?php
-// $Id: viddler.admin.inc,v 1.1.2.6 2008/11/12 18:14:37 aaron Exp $
+// $Id: viddler.admin.inc,v 1.1 2009/05/11 20:28:53 jeremyheslop Exp $
 
 /**
  * @file

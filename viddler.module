@@ -1,5 +1,5 @@
 <?php
-// $Id$
+// $Id: viddler.module,v 1.1 2009/05/11 20:28:53 jeremyheslop Exp $
 /**
  * @file
  * Enabling Viddler with CCK and Views

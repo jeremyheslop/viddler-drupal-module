@@ -1,4 +1,4 @@
-; $Id$
+; $Id: viddler_api.info,v 1.1 2009/05/11 20:28:53 jeremyheslop Exp $
 name = Viddler API
 description = "Viddler API"
 core = 6.x

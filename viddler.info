@@ -1,7 +1,6 @@
-; $Id$
+; $Id: viddler.info,v 1.2 2009/05/19 20:10:09 jeremyheslop Exp $
 name = Viddler
 description = "Viddler CCK and Views Integration"
 core = 6.x
 package = Viddler
 dependencies[] = viddler_api
-package[] = Views
