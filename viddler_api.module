@@ -1,5 +1,5 @@
 <?php
-// $Id: viddler_api.module,v 1.1 2009/05/11 20:28:53 jeremyheslop Exp $
+// $Id: viddler_api.module,v 1.3 2009/11/13 18:37:08 jeremyheslop Exp $
 /**
  * @file
  * Viddler API for Drupal
@@ -252,7 +252,7 @@ function viddler_api_updatedb($uid, $nid, $id) {
   // do not grab details if we are queued in cron
   if(!viddler_api_checkcron($id)){
     $details = viddler_api_getdetails($id);    
-    if(isset($details->data)){
+    if(isset($details->id)){
       $result = db_query('REPLACE INTO {viddler_videos} (
         `uid`,
         `nid`,
@@ -395,7 +395,7 @@ function viddler_api_prepareupload(){
   
   $viddler_session = viddler_api_authenticate();
   if($viddler_session){
-    $rest = $viddler_connect->video_prepareUpload($viddler_session);
+    $rest = $viddler_connect->video_prepareupload($viddler_session);
     return $rest;
   }
   else{
