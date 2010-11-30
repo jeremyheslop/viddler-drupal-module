@@ -1,5 +1,5 @@
 <?php
-// $Id: viddler.module,v 1.2 2009/11/13 18:23:15 jeremyheslop Exp $
+// $Id: viddler.module,v 1.3 2010/02/25 17:28:39 jeremyheslop Exp $
 /**
  * @file
  * Enabling Viddler with CCK and Views
@@ -338,7 +338,7 @@ function viddler_field($op, &$node, $field, &$items, $teaser, $page) {
       if (is_array($items)) {
         foreach ($items as $delta => $item) {
           if(preg_match("/^[a-zA-Z]+[:\/\/]+[A-Za-z0-9\-_]+\\.+[A-Za-z0-9\.\/%&=\?\-_]+$/i", $item['url_id'])){
-            $video_id = viddler_api_getidbyurl($item['url_id']);
+            $video_id = viddler_api_getidbyurl(rtrim($item['url_id'], '/') . "/");
             if($video_id && empty($item['video_id'])){
               $items[$delta]['video_id'] = $video_id;
             }
@@ -346,13 +346,14 @@ function viddler_field($op, &$node, $field, &$items, $teaser, $page) {
         }
       }
     break;
-    
+
     case 'validate':      
       $allowed_values = content_allowed_values($field);
       if (is_array($items)) {
         foreach ($items as $delta => $item) {
           $error_element = isset($item['_error_element']) ? $item['_error_element'] : '';
           if (is_array($item) && isset($item['_error_element'])) unset($item['_error_element']);
+
           if (!empty($item['video_id'])) {
             if (count($allowed_values) && !array_key_exists($item['video_id'], $allowed_values)) {
               form_set_error($error_element, t('%name: illegal value.', array('%name' => t($field['widget']['label']))));
@@ -368,6 +369,15 @@ function viddler_field($op, &$node, $field, &$items, $teaser, $page) {
     case 'sanitize':
       foreach ($items as $delta => $item) {
         $items[$delta]['#viddler_field'] = $field;
+
+        // Check for url and then set video_id
+        if(preg_match("/^[a-zA-Z]+[:\/\/]+[A-Za-z0-9\-_]+\\.+[A-Za-z0-9\.\/%&=\?\-_]+$/i", $item['url_id'])){
+          $video_id = viddler_api_getidbyurl(rtrim($item['url_id'], '/') . "/");
+          if($video_id && empty($item['video_id'])){
+            $items[$delta]['video_id'] = $video_id;
+          }
+        }
+
       }
       break;
   }
@@ -905,7 +915,7 @@ function viddler_process($element, $edit, $form_state, $form) {
           '#size' => !empty($field['widget']['size']) ? $field['widget']['size'] : 60,
           '#attributes' => array('class' => 'viddler_url'),
           '#title' => 'Enter a url of a Viddler video',
-          '#description' => 'Urls should start with http and look like this http://www.viddler.com/explore/username/videos/10',
+          '#description' => 'Urls should start with http and look like this http://www.viddler.com/explore/username/videos/10/',
         );   
       }
 
