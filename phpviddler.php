@@ -468,7 +468,6 @@ ovie" value="http://www.viddler.com/'.$type.'/'.$videoid.'/" />';
   function buildArguments($p) {
     // tom@punkave.com: undefined warning otherwise
     $args = '';
-    dpm($p);
     foreach ($p as $key => $value) {
       
       // Skip these
