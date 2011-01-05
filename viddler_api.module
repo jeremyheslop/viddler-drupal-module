@@ -1,5 +1,5 @@
 <?php
-// $Id: viddler_api.module,v 1.4 2009/11/18 14:11:20 jeremyheslop Exp $
+// $Id: viddler_api.module,v 1.5 2011/01/05 03:46:00 jeremyheslop Exp $
 /**
  * @file
  * Viddler API for Drupal
@@ -30,7 +30,6 @@ function viddler_api_authenticate() {
   $password = urlencode(variable_get('viddler_password', ''));
 
   $viddler_session_cache = cache_get('viddler_api_' . $username);
-  
   if (empty($viddler_session_cache->data) || time() > $viddler_session_cache->expire || $reset || true) {
     $viddler_connect->apiKey = $apikey;
     try {
@@ -143,33 +142,36 @@ function viddler_api_deletevideo($id) {
     // remove from viddler_videos table to not show in views
     $result = db_query('DELETE FROM {viddler_videos} WHERE `video_id` = "%s";', $id);
     if($result){
-      // get viddler user
-      $username = htmlentities(variable_get('viddler_username', ''));
-      // do not delete from viddler site if drupal username is different than the videos viddler username
-      $details = viddler_api_getdetails($id);
-      if($details['username'] == $username){
-        $phpviddlerclass = PHPVIDDLERCLASS;
-        $viddler_connect = new $phpviddlerclass();
-        $apikey = variable_get('viddler_apikey', '');
-        $viddler_connect->apiKey = $apikey;
-        $viddler_session = viddler_api_authenticate();
-        if($viddler_session){
-          $viddler_result = $viddler_connect->video_delete($viddler_session, $id);
-          return $viddler_result;
-        }
-        else{
-          return false;
-        }
-      }
-      else{
-        watchdog('viddler_api','Video could not be deleted because the viddler_username @vidder_username did not match the videos username with video id of @video_id.',array(
-          '@viddler_username' => $username, '@video_id' => $video_id));
+      watchdog('viddler_api','Video was removed from the database with video id of @video_id.',array(
+        '@video_id' => $id));      
+    }
+    // get viddler user
+    $username = htmlentities(variable_get('viddler_username', ''));
+    // do not delete from viddler site if drupal username is different than the videos viddler username
+    $details = viddler_api_getdetails($id);
+    if($details['author'] == $username){
+      $phpviddlerclass = PHPVIDDLERCLASS;
+      $viddler_connect = new $phpviddlerclass();
+      $apikey = variable_get('viddler_apikey', '');
+      $viddler_connect->apiKey = $apikey;
+      $viddler_session = viddler_api_authenticate();
+      try {
+        $viddler_result = $viddler_connect->video_delete($viddler_session, $id);
+        return $viddler_result;
+      } catch (Exception $e) {
+        if(variable_get('viddler_show_debug', ''))
+          drupal_set_message("Viddler API Delete Video Error: " . $e->getMessage() . " Details: " . $e->details . " Method: " . $e->method, 'error');
         return false;
       }
     }
     else{
+      watchdog('viddler_api','Video could not be deleted because the viddler_username @vidder_username did not match the videos username with video id of @id.',array(
+        '@viddler_username' => $username, '@video_id' => $id));
+      if(variable_get('viddler_show_debug', ''))  
+        drupal_set_message("Viddler API Delete Video Error: " . "Video could not be deleted because the viddler_username " . $username . " did not match the videos username (" . $details['author'] . ") with video id of " . $id, 'error');
+        
       return false;
-    }    
+    }
   }
 }
 

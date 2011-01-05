@@ -1,5 +1,5 @@
 <?php
-// $Id: viddler.admin.inc,v 1.1 2009/05/11 20:28:53 jeremyheslop Exp $
+// $Id: viddler.admin.inc,v 1.2 2011/01/05 03:42:20 jeremyheslop Exp $
 
 /**
  * @file
@@ -14,7 +14,7 @@ function viddler_settings() {
   $form['general'] = array(
     '#type' => 'fieldset',
     '#title' => t('General Settings'),
-    '#description' => t('These features will be generally available for use by related modules as needed.'),
+    '#description' => t('These features will effect all viddler content types.'),
     '#collapsible' => TRUE,
     '#collapsed' => FALSE,
   );
@@ -44,14 +44,14 @@ function viddler_settings() {
     '#title' => t('Allow Viddler Videos to be Deleted?'),
     '#default_value' => variable_get('viddler_delete_allowed', ''),
     '#required' => FALSE,
-    '#description' => t('Viddler videos will not be removed from the account above if unchecked.'),
+    '#description' => t('Viddler videos will not be removed from the account above if unchecked. Videos cannot be if they are not owned by the user above.'),
   );
   $form['general']['viddler_show_debug'] = array(
     '#type' => 'checkbox',
     '#title' => t('Show Viddler API messages?'),
     '#default_value' => variable_get('viddler_show_debug', ''),
     '#required' => FALSE,
-    '#description' => t('Display Viddler API messages for debugging purposes. Should not check if the site is in production.'),
+    '#description' => t('Display Viddler API messages for debugging purposes. Do not check on a production site.'),
   );
   
   return system_settings_form($form);

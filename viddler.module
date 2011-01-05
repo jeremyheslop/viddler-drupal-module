@@ -1,5 +1,5 @@
 <?php
-// $Id: viddler.module,v 1.3 2010/02/25 17:28:39 jeremyheslop Exp $
+// $Id: viddler.module,v 1.4 2011/01/05 03:45:08 jeremyheslop Exp $
 /**
  * @file
  * Enabling Viddler with CCK and Views
@@ -39,6 +39,12 @@ function viddler_menu() {
     'page arguments' => array(2,3,4),
     'type' => MENU_CALLBACK,
   );
+  
+  $items['viddler/progress'] = array(
+    'page callback' => 'viddler_progress',
+    'access arguments' => array('access content'),
+    'type' => MENU_CALLBACK,
+  );
 
   return $items;
 }
@@ -47,7 +53,7 @@ function viddler_menu() {
 * Implementation of hook_perm().
 */
 function viddler_perm() {
-  return array('record via webcam', 'upload video');
+  return array('record via webcam', 'upload video', 'remove video', 'delete video');
 }
 
 /**
@@ -78,46 +84,17 @@ function viddler_upload_js($type_name, $field_name, $delta) {
   
   if (!$form) {
     // Invalid form_build_id.
-    print drupal_to_js(array('data' => ''));
+    drupal_set_message(t('An unrecoverable error occurred. This form was missing from the server cache. Try reloading the page and submitting again.'), 'error');
+    print drupal_to_js(array('data' => theme('status_messages')));
     exit;
   }
-  
-  // form_get_cache() doesn't yield the original $form_state,
-  // but form_builder() does. Needed for retrieving the file array.
-  $built_form = $form;
-  $built_form_state = $form_state;
-  
-  $built_form += array('#post' => $_POST);
-  $built_form = form_builder($_POST['form_id'], $built_form, $built_form_state);
-  
-  // Clean ids, so that the same element doesn't get a different element id
-  // when rendered once more further down.
-  form_clean_id(NULL, TRUE);
-  
-  // Ask CCK for the replacement form element. Going through CCK gets us
-  // the benefit of nice stuff like '#required' merged in correctly.
-  module_load_include('inc', 'content', 'includes/content.node_form');
-  $field_element = content_field_form($form, $built_form_state, $field, $delta);
-  $delta_element = $field_element[$field_name][0]; // there's only one element in there
-  
-  // Add the new element at the right place in the form.
-  if (module_exists('fieldgroup') && ($group_name = _fieldgroup_field_get_group($type_name, $field_name))) {
-    $form[$group_name][$field_name][$delta] = $delta_element;
-  }
-  else {
-    $form[$field_name][$delta] = $delta_element;
-  }
-  
-  // Write the (unbuilt, updated) form back to the form cache.
-  form_set_cache($form_build_id, $form, $form_state);
-  
+    
   // Render the form for output.
   $form += array(
     '#post' => $_POST,
     '#programmed' => FALSE,
   );
   drupal_alter('form', $form, array(), 'viddler_upload_js');
-  $form_state = array('submitted' => FALSE);
   $form = form_builder('viddler_upload_js', $form, $built_form_state);
   $field_form = empty($group_name) ? $form[$field_name] : $form[$group_name][$field_name];
   
@@ -125,9 +102,13 @@ function viddler_upload_js($type_name, $field_name, $delta) {
   $field_form[$delta]['#prefix'] = '<div class="ahah-new-content">';
   $field_form[$delta]['#suffix'] = '</div>';
   
+  // if progress monitoring was used previously reset it before uploading.
+  if(isset($_SESSION['percent_save'])){
+    $_SESSION['percent_save'] = -1;
+  }
+  
   $upload_name = $field_form[$delta]['#field_name'] .'_'. $field_form[$delta]['#delta'];
   if (!empty($_FILES['files']['name'][$upload_name])) {
-    // $file = file_save_upload($upload_name, $validators = array(), $dest = FALSE, $replace = FILE_EXISTS_RENAME);
     $video_id = viddler_api_uploadvideo($_FILES['files']['tmp_name'][$upload_name]);
     if($video_id){
       $field_form[$delta]['video_id']['#value'] = $video_id;
@@ -138,8 +119,37 @@ function viddler_upload_js($type_name, $field_name, $delta) {
     }
   }
   else{
-      $field_form[$delta]['upload_video']['#suffix'] = '<div id="'. $field_form[$delta]['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper error">Nothing to upload. Please select a file and then click on Upload.</div>';      
+        
+    $button_prefix = $field_form[$delta]['#field_name'] .'_'. $field_form[$delta]['#delta'];
     
+    if ($field_form[$delta]['#post'][$button_prefix . '_viddler_remove']) {
+      $field_form[$delta]['video_id']['#value'] = "";
+      $field_form[$delta]['upload_video']['#suffix'] = '<div id="'. $field_form[$delta]['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper status">Video removed from this post.</div>';
+    }else
+    if ($field_form[$delta]['#post'][$button_prefix . '_viddler_delete']) {
+      if(variable_get('viddler_delete_allowed', '')  && user_access('delete video') ){
+      
+        global $user;
+        $video_id = $field_form[$delta]['#value']['video_id'];
+        $result = viddler_api_deletevideo($video_id);
+        if($result){
+          watchdog('viddler','Video deleted by @user with video id of @video_id.',array(
+            '@user' => $user->name, '@video_id' => $video_id));
+          $field_form[$delta]['video_id']['#value'] = "";
+          $field_form[$delta]['upload_video']['#suffix'] = '<div id="'. $field_form[$delta]['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper status">Video removed from this post and deleted from the viddler servers.</div>';
+
+        }
+        else {
+          watchdog('viddler','Video NOT deleted by @user with video id of @video_id.',array(
+            '@user' => $user->name, '@video_id' => $video_id));
+          $field_form[$delta]['upload_video']['#suffix'] = '<div id="'. $field_form[$delta]['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper error">Video was not removed from this post or deleted from the viddler servers because of a problem.</div>';
+          // if we fail set the value back
+          $field_form[$delta]['video_id']['#value'] = $field_form[$delta]['#value']['video_id'];
+        }
+      }
+    }else
+      // remove or delete were not pressed so upload button was pressed with no file
+      $field_form[$delta]['upload_video']['#suffix'] = '<div id="'. $field_form[$delta]['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper error">Nothing to upload. Please select a file and then click on Upload.</div>';
   }
   
   $output = theme('status_messages') . drupal_render($field_form[$delta]);
@@ -148,8 +158,23 @@ function viddler_upload_js($type_name, $field_name, $delta) {
   // either "Upload" or "Delete") yet. Which in turn causes it not to attach
   // AHAH behaviours after replacing the element. So we need to tell it first.
   $javascript = drupal_add_js(NULL, NULL);
+  
+  $viddler_ahah_settings = array();
   if (isset($javascript['setting'])) {
-    $output .= '<script type="text/javascript">jQuery.extend(Drupal.settings, '. drupal_to_js(call_user_func_array('array_merge_recursive', $javascript['setting'])) .');</script>';
+    foreach ($javascript['setting'] as $settings) {
+      if (isset($settings['ahah'])) {
+        foreach ($settings['ahah'] as $id => $ahah_settings) {
+          if (strpos($id, 'viddler-upload') || strpos($id, 'viddler-remove') || strpos($id, 'viddler-delete')) {
+            $viddler_ahah_settings[$id] = $ahah_settings;
+          }
+        }
+      }
+    }
+  }
+
+  if (isset($viddler_ahah_settings)) {
+    // $output .= '<script type="text/javascript">jQuery.extend(Drupal.settings, '. drupal_to_js(call_user_func_array('array_merge_recursive', $viddler_ahah_settings)) .');</script>';
+    $output .= '<script type="text/javascript">jQuery.extend(Drupal.settings, '. drupal_to_js($viddler_ahah_settings) .');</script>';
   }
   
   //TODO: Check for if (!empty($_POST['js'])) { and redirect via drupal_goto to appropriate page
@@ -311,8 +336,9 @@ function viddler_field($op, &$node, $field, &$items, $teaser, $page) {
       break;
       
     case 'delete':
-      // Only delete associated viddler video if variable is set on admin/content/viddler page.
-      if(variable_get('viddler_delete_allowed', '')){
+      // Only delete associated viddler video if variable is set on admin/content/viddler page and the user has the ability to remove the video.
+      // The video gets removed from the viddler server.
+      if(variable_get('viddler_delete_allowed', '')  && user_access('delete video') ){
         
         // Node is being deleted; delete associated video data.
         if (is_array($items)) {
@@ -662,10 +688,25 @@ function viddler_widget_settings($op, $widget) {
         '#title' => t('Record with Webcam'),
         '#default_value' => empty($widget['record_webcam']) ? variable_get('viddler_record_webcam', FALSE) : $widget['record_webcam'],
       );
+      $form['record']['record_webcam_hidden'] = array( 
+        '#type' => 'checkbox',
+        '#title' => t('Hide Record with Webcam until button click'),
+        '#default_value' => empty($widget['record_webcam_hidden']) ? variable_get('viddler_record_webcam_hidden', FALSE) : $widget['record_webcam_hidden'],
+      );
       $form['record']['upload_video'] = array( 
         '#type' => 'checkbox',
         '#title' => t('Upload a video'),
         '#default_value' => empty($widget['upload_video']) ? variable_get('viddler_upload_video', FALSE) : $widget['upload_video'],
+      );
+      $form['record']['remove_video'] = array( 
+        '#type' => 'checkbox',
+        '#title' => t('Show remove video button (with proper permissions)'),
+        '#default_value' => empty($widget['remove_video']) ? variable_get('viddler_remove_video', FALSE) : $widget['remove_video'],
+      );
+      $form['record']['delete_video'] = array( 
+        '#type' => 'checkbox',
+        '#title' => t('Show delete video button (with proper permissions)'),
+        '#default_value' => empty($widget['delete_video']) ? variable_get('viddler_delete_video', FALSE) : $widget['delete_video'],
       );
       $form['record']['vid_url'] = array( 
         '#type' => 'checkbox',
@@ -792,7 +833,7 @@ function viddler_widget_settings($op, $widget) {
     break;
     
     case 'save':
-      $columns = array('record_webcam', 'upload_video', 'vid_url', 'vid_id', 'video_width', 'video_height', 'video_autoplay', 'preview_width', 'preview_height', 'preview_autoplay', 'thumbnail_width', 'thumbnail_height', 'thumbnail_default_path', );
+      $columns = array('record_webcam', 'record_webcam_hidden', 'upload_video', 'remove_video', 'delete_video', 'vid_url', 'vid_id', 'video_width', 'video_height', 'video_autoplay', 'preview_width', 'preview_height', 'preview_autoplay', 'thumbnail_width', 'thumbnail_height', 'thumbnail_default_path', );
       return $columns;
   }
 }
@@ -810,6 +851,9 @@ function viddler_process($element, $edit, $form_state, $form) {
   $field = $form['#field_info'][$field_name];
   $field_key  = $element['#columns'][0];
   $delta = $element['#delta'];
+  
+  // Show progress bar information
+  drupal_add_js(drupal_get_path('module', 'viddler') .'/viddler.js');
   
   // Only show video id text input on "Default value" form under manage fields in the content type area
   if($element['#name'] == "default_value_widget[" . $field_name. "][" . $delta. "]"){
@@ -837,7 +881,7 @@ function viddler_process($element, $edit, $form_state, $form) {
     if($field['widget']['record_webcam'] && user_access('record via webcam')){
       // Add viddler callback javascript if we are allowing recording via webcam http://developers.viddler.com/documentation/articles/howto-record/
 
-      if(!$element['#value'][$field_key]){
+      if(!$element['#value'][$field_key] && !$field['widget']['record_webcam_hidden']){
         drupal_add_js( 
         'function recordDone(username,user_video_number,video_id) {
           // handle record data
@@ -845,7 +889,7 @@ function viddler_process($element, $edit, $form_state, $form) {
         }', 
         'inline' 
         );
-    
+  
         $element['markup'] = array(
           '#type' => 'markup',
           '#value' => viddler_api_getrecordembed(),
@@ -864,14 +908,38 @@ function viddler_process($element, $edit, $form_state, $form) {
              'path' => 'viddler/record_again',
              'wrapper' => 'recordembed-wrapper',
              'method' => 'replace',
-             'progress' => array('type' => 'throbber'),
+             'progress' => array('type' => 'bar'),
            ),
         );
-      
+        if($field['widget']['record_webcam_hidden'] && !$element['#value'][$field_key]){
+          $element['markup']['#value'] = '<div id=\'recordembed-wrapper\'>';
+          $element['record_again']['#value'] = 'Show Record Video Player';
+        }
       }
     }
 
     if($field['widget']['upload_video'] && user_access('upload video')){
+      if ($progress_indicator != 'throbber' && $implementation = viddler_progress_implementation()) {
+        $upload_progress_key = md5(mt_rand());
+        
+        if ($implementation == 'uploadprogress') {
+          $element['UPLOAD_IDENTIFIER'] = array(
+            '#type' => 'hidden',
+            '#value' => $upload_progress_key,
+            '#attributes' => array('class' => 'viddler-progress'),
+            '#prefix' => '<div id="'. $element['#id'] .'-upload_video-ahah-wrapper" class="viddler_upload-ahah-wrapper">',
+          );
+        }
+        elseif ($implementation == 'apc') {
+          $element['APC_UPLOAD_PROGRESS'] = array(
+            '#type' => 'hidden',
+            '#value' => $upload_progress_key,
+            '#attributes' => array('class' => 'viddler-progress'),
+            '#prefix' => '<div id="'. $element['#id'] .'-upload_video-ahah-wrapper" class="viddler_upload-ahah-wrapper">',
+          );
+        }
+      }
+      
       $element['upload_video'] = array(
         '#name' => 'files['. $element['#field_name'] .'_'. $element['#delta'] .']',
         '#type' => 'file',
@@ -881,7 +949,6 @@ function viddler_process($element, $edit, $form_state, $form) {
           // TODO: add settings for file extensions to limit what kinds of files we can upload
 //          'accept' => implode(',', array_filter(explode(' ', $field['widget']['file_extensions']))),
         ),
-        '#prefix' => '<div id="'. $element['#id'] .'-upload_video-ahah-wrapper" class="viddler_upload-ahah-wrapper">',
         '#suffix' => '<div id="'. $element['#id'] .'-upload_video-ahah-status" class="viddler_upload-ahah-wrapper"></div>',
       );
       
@@ -891,23 +958,89 @@ function viddler_process($element, $edit, $form_state, $form) {
       $element['upload_btn'] = array(
         '#type' => 'submit',
         '#value' => t('Upload Video'),
-        '#process' => array('form_expand_ahah'),
+        // '#process' => array('form_expand_ahah'),
         '#submit' => array('node_form_submit_build_node'),
         '#ahah' => array( // with JavaScript
            'path' => 'viddler/upload_video/'.   $element['#type_name'] .'/'. $element['#field_name'] .'/'. $element['#delta'],
            'wrapper' => $element['#id'] .'-ahah-wrapper',
            'method' => 'replace',
            'effect' => 'fade',
+           'progress' => array('type' => 'bar', 'path' => 'viddler/progress/' . $upload_progress_key),
         ),
         '#field_name' => $element['#field_name'],
         '#delta' => $element['#delta'],
         '#type_name' => $element['#type_name'],
+        '#suffix' => '<br style="clear: both; "/></div>',
         // TODO: add validation for certain types of media to be uploaded
         // '#upload_validators' => $element['#upload_validators'],
-        '#suffix' => '<br style="clear: both; "/></div>',
+      );
+            
+      if ($progress_indicator != 'throbber' && $implementation = viddler_progress_implementation()) {
+        // Add the upload progress callback.
+        $element['upload_btn']['#ahah']['progress']['type'] = 'bar';
+        $element['upload_btn']['#ahah']['progress']['path'] = 'viddler/progress/' . $upload_progress_key;
+      }
+    }
+    
+    if($field['widget']['remove_video'] && user_access('remove video')){
+      $element['remove_btn'] = array(
+        // With default CCK edit forms, $element['#parents'] is array($element['#field_name'], $element['#delta']).
+        // However, if some module (for example, flexifield) places our widget deeper in the tree, we want to
+        // use that information in constructing the button name.
+        '#name' => implode('_', $element['#parents']) .'_viddler_remove',
+        '#type' => 'submit',
+        '#value' => t('Remove Video'),
+        '#submit' => array('node_form_submit_build_node'),
+        '#ahah' => array( // with JavaScript
+          'path' => 'viddler/upload_video/'.   $element['#type_name'] .'/'. $element['#field_name'] .'/'. $element['#delta'],
+          'wrapper' => $element['#id'] .'-ahah-wrapper',
+          'method' => 'replace',
+          'effect' => 'fade',
+        ),
+        '#field_name' => $element['#field_name'],
+        '#delta' => $element['#delta'],
+        '#post' => $element['#post'],
+        '#suffix' => '<br style="clear: both; "/>',
       );
     }
-          
+    
+    if($field['widget']['delete_video'] && user_access('delete video')){
+      $element['delete_btn'] = array(
+        // With default CCK edit forms, $element['#parents'] is array($element['#field_name'], $element['#delta']).
+        // However, if some module (for example, flexifield) places our widget deeper in the tree, we want to
+        // use that information in constructing the button name.
+        '#name' => implode('_', $element['#parents']) .'_viddler_delete',
+        '#type' => 'submit',
+        '#value' => t('Delete Video'),
+        '#submit' => array('node_form_submit_build_node'),
+        '#ahah' => array( // with JavaScript
+          'path' => 'viddler/upload_video/'.   $element['#type_name'] .'/'. $element['#field_name'] .'/'. $element['#delta'],
+          'wrapper' => $element['#id'] .'-ahah-wrapper',
+          'method' => 'replace',
+          'effect' => 'fade',
+        ),
+        '#field_name' => $element['#field_name'],
+        '#delta' => $element['#delta'],
+        '#post' => $element['#post'],
+        '#suffix' => '<br style="clear: both; "/>',
+      );
+    }
+    
+    // Because the output of this field changes depending on the button clicked,
+    // we need to ask FAPI immediately if the remove button was clicked.
+    // It's not good that we call this private function, but
+    // $form_state['clicked_button'] is only available after this #process
+    // callback is finished.
+    $removed = false;
+    if (_form_button_was_clicked($element['remove_btn'])) {
+      $removed = true;
+    }    
+    $deleted = false;
+    if (_form_button_was_clicked($element['delete_btn'])) {
+      $deleted = true;
+    }    
+    
+              
     if($field['widget']['vid_url']){
         $element['url_id'] = array(
           '#type' => 'textfield',
@@ -923,7 +1056,7 @@ function viddler_process($element, $edit, $form_state, $form) {
     if($field['widget']['vid_id']){
       $element[$field_key] = array(
         '#type' => 'textfield',
-        '#default_value' => isset($element['#value'][$field_key]) ? $element['#value'][$field_key] : NULL,
+        '#default_value' => (isset($element['#value'][$field_key]) && !$removed && !$deleted) ? $element['#value'][$field_key] : NULL,
         '#size' => !empty($field['widget']['size']) ? $field['widget']['size'] : 60,
         '#attributes' => array('class' => 'viddler_video_id'),
 
@@ -1016,6 +1149,62 @@ function viddler_cron(){
     }
   }
 
+}
+
+/**
+ * Menu callback for upload progress.
+ */
+function viddler_progress($key) {
+  $progress = array(
+    'message' => t('Starting upload...'),
+    'percentage' => -1,
+  );
+
+  $implementation = viddler_progress_implementation();
+  if ($implementation == 'uploadprogress') {
+    $status = uploadprogress_get_info($key);
+    if (isset($status['bytes_uploaded']) && !empty($status['bytes_total'])) {
+      $progress['message'] = t('Uploading... (@current of @total)', array('@current' => format_size($status['bytes_uploaded']), '@total' => format_size($status['bytes_total'])));
+      $progress['percentage'] = round(100 * $status['bytes_uploaded'] / $status['bytes_total']);
+    }
+    
+    if ($progress['percentage'] > 0) {
+      $_SESSION['percent_save'] = $progress['percentage'];
+    }
+    if ($_SESSION['percent_save'] > 0 && !isset($status['bytes_uploaded'])) {
+            $progress['percentage'] = -1;
+            $progress['message'] = t('Uploading to viddler. Please wait...');
+    }
+  }
+  elseif ($implementation == 'apc') {
+    $status = apc_fetch('upload_' . $key);
+    if (isset($status['current']) && !empty($status['total'])) {
+      $progress['message'] = t('Uploading... (@current of @total)', array('@current' => format_size($status['current']), '@total' => format_size($status['total'])));
+      $progress['percentage'] = round(100 * $status['current'] / $status['total']);
+    }
+  }
+
+  drupal_json($progress);
+}
+
+/**
+ * Determine which upload progress implementation to use, if any available.
+ */
+function viddler_progress_implementation() {
+  static $implementation;
+  if (!isset($implementation)) {
+    $implementation = FALSE;
+
+    // We prefer the PECL extension uploadprogress because it supports multiple
+    // simultaneous uploads. APC only supports one at a time.
+    if (extension_loaded('uploadprogress')) {
+      $implementation = 'uploadprogress';
+    }
+    elseif (extension_loaded('apc') && ini_get('apc.rfc1867')) {
+      $implementation = 'apc';
+    }
+  }
+  return $implementation;
 }
 
 /**
@@ -1212,6 +1401,7 @@ function viddler_cron(){
   );
   return $data;
 }
+
 
 // /*
 //  * views module seems to not load in any logical order, so we need to require some of it's

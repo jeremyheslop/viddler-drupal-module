@@ -109,7 +109,7 @@ class Phpviddler {
   */
   function video_delete($sessionid=null, $video_id=null) {
   
-    $result = $this->sendRequest('viddler.videos.delete', 'sessionid='.$sessionid.'&video_id='.$video_id, 'post');
+    $result = $this->sendRequest('viddler.videos.delete', array('sessionid'=>$sessionid, 'video_id' => $video_id), 'post');
     return $result;
   }
 
@@ -424,7 +424,9 @@ class Phpviddler {
     
     if (!$videoid) return false;
 
-    $html = '<object classid="clsid:D27CDB6E-AE6D-11cf-96B8-444553540000" width="'.$width.'" height="'.$height.'" id="viddlerplayer-'.$videoid.'"><param name="movie" value="http://www.viddler.com/'.$type.'/'.$videoid.'/" />';
+    $html = '<object classid="clsid:D27CDB6E-AE6D-11cf-96B8-444553540000" width=
+"'.$width.'" height="'.$height.'" id="viddlerplayer-'.$videoid.'"><param name="m
+ovie" value="http://www.viddler.com/'.$type.'/'.$videoid.'/" />';
     if ($autoplay) {
       $options['autoplay'] = 't';
     }
@@ -466,6 +468,7 @@ class Phpviddler {
   function buildArguments($p) {
     // tom@punkave.com: undefined warning otherwise
     $args = '';
+    dpm($p);
     foreach ($p as $key => $value) {
       
       // Skip these
