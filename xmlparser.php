@@ -4,6 +4,10 @@
 # XML Library, by Keith Devens, version 1.2b
 # http://keithdevens.com/software/phpxml
 #
+# Modified by Lee Adkins on April 11,2008
+# Modifications: Removed explicit pass-by-reference in xml_parser creation
+# to remove depreciation warnings. Functionality retained.
+#
 # This code is Open Source, released under terms similar to the Artistic License.
 # Read the license at http://keithdevens.com/software/license
 #
@@ -23,7 +27,7 @@ function & XML_unserialize(&$xml){
 # XML_serialize: serializes any PHP data structure into XML
 # Takes one parameter: the data to serialize. Must be an array.
 ###################################################################################
-function & XML_serialize(&$data, $level = 0, $prior_key = NULL){
+function XML_serialize(&$data, $level = 0, $prior_key = NULL){
 	if($level == 0){ ob_start(); echo '<?xml version="1.0" ?>',"\n"; }
 	while(list($key, $value) = each($data))
 		if(!strpos($key, ' attr')) #if it's not an attribute
@@ -46,7 +50,7 @@ function & XML_serialize(&$data, $level = 0, $prior_key = NULL){
 				else echo ">\n",XML_serialize($value, $level+1),str_repeat("\t", $level),"</$tag>\n";
 			}
 	reset($data);
-	if($level == 0){ $str = &ob_get_contents(); ob_end_clean(); return $str; }
+	if($level == 0){ $str = ob_get_contents(); ob_end_clean(); return $str; }
 }
 ###################################################################################
 # XML class: utility class to be used with PHP's XML handling functions
@@ -60,17 +64,19 @@ class XML{
 
 	function XML(){
  		$this->parser = &xml_parser_create();
-		xml_parser_set_option(&$this->parser, XML_OPTION_CASE_FOLDING, false);
-		xml_set_object(&$this->parser, &$this);
-		xml_set_element_handler(&$this->parser, 'open','close');
-		xml_set_character_data_handler(&$this->parser, 'data');
+		xml_parser_set_option($this->parser, XML_OPTION_CASE_FOLDING, false);
+		xml_set_object($this->parser, $this);
+		xml_set_element_handler($this->parser, 'open','close');
+		xml_set_character_data_handler($this->parser, 'data');
 	}
-	function destruct(){ xml_parser_free(&$this->parser); }
+	function destruct(){ xml_parser_free($this->parser); }
 	function & parse(&$data){
 		$this->document = array();
 		$this->stack    = array();
 		$this->parent   = &$this->document;
-		return xml_parse(&$this->parser, &$data, true) ? $this->document : NULL;
+		// PHP 5 fix
+		$php5fix = xml_parse($this->parser, $data, true) ? $this->document : NULL;
+		return $php5fix;
 	}
 	function open(&$parser, $tag, $attributes){
 		$this->data = ''; #stores temporary cdata

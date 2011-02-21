@@ -1,5 +1,5 @@
 <?php
-// $Id: viddler.module,v 1.4 2011/01/05 03:45:08 jeremyheslop Exp $
+// $Id: viddler.module,v 1.7 2011/02/21 06:02:15 jeremyheslop Exp $
 /**
  * @file
  * Enabling Viddler with CCK and Views
@@ -698,6 +698,17 @@ function viddler_widget_settings($op, $widget) {
         '#title' => t('Upload a video'),
         '#default_value' => empty($widget['upload_video']) ? variable_get('viddler_upload_video', FALSE) : $widget['upload_video'],
       );
+      $form['record']['progress_indicator'] = array(
+        '#type' => 'radios',
+        '#title' => t('Progress indicator for video upload'),
+        '#options' => array(
+          'bar' => t('Bar with progress meter'),
+          'throbber' => t('Throbber'),
+        ),
+        '#default_value' => empty($widget['progress_indicator']) ? 'bar' : $widget['progress_indicator'],
+        '#description' => t('Your server supports upload progress capabilities. The "throbber" display does not indicate progress but takes up less room on the form, you may want to use it if you\'ll only be uploading small files or if experiencing problems with the progress bar.'),
+        '#access' => viddler_progress_implementation(),
+      );
       $form['record']['remove_video'] = array( 
         '#type' => 'checkbox',
         '#title' => t('Show remove video button (with proper permissions)'),
@@ -718,6 +729,7 @@ function viddler_widget_settings($op, $widget) {
         '#title' => t('Input id'),
         '#default_value' => empty($widget['vid_id']) ? variable_get('viddler_vid_id', FALSE) : $widget['vid_id'],
       );
+      
             
       $width = variable_get('viddler_default_video_width', VIDDLER_DEFAULT_VIDEO_WIDTH);
       $height = variable_get('viddler_default_video_height', VIDDLER_DEFAULT_VIDEO_HEIGHT);
@@ -833,7 +845,7 @@ function viddler_widget_settings($op, $widget) {
     break;
     
     case 'save':
-      $columns = array('record_webcam', 'record_webcam_hidden', 'upload_video', 'remove_video', 'delete_video', 'vid_url', 'vid_id', 'video_width', 'video_height', 'video_autoplay', 'preview_width', 'preview_height', 'preview_autoplay', 'thumbnail_width', 'thumbnail_height', 'thumbnail_default_path', );
+      $columns = array('record_webcam', 'record_webcam_hidden', 'upload_video', 'remove_video', 'delete_video', 'vid_url', 'vid_id', 'progress_indicator', 'video_width', 'video_height', 'video_autoplay', 'preview_width', 'preview_height', 'preview_autoplay', 'thumbnail_width', 'thumbnail_height', 'thumbnail_default_path', );
       return $columns;
   }
 }
@@ -881,7 +893,7 @@ function viddler_process($element, $edit, $form_state, $form) {
     if($field['widget']['record_webcam'] && user_access('record via webcam')){
       // Add viddler callback javascript if we are allowing recording via webcam http://developers.viddler.com/documentation/articles/howto-record/
 
-      if(!$element['#value'][$field_key] && !$field['widget']['record_webcam_hidden']){
+      if($video_id_field_name){
         drupal_add_js( 
         'function recordDone(username,user_video_number,video_id) {
           // handle record data
@@ -889,7 +901,8 @@ function viddler_process($element, $edit, $form_state, $form) {
         }', 
         'inline' 
         );
-  
+      }
+      if(!$element['#value'][$field_key] && !$field['widget']['record_webcam_hidden']){
         $element['markup'] = array(
           '#type' => 'markup',
           '#value' => viddler_api_getrecordembed(),
@@ -917,6 +930,8 @@ function viddler_process($element, $edit, $form_state, $form) {
         }
       }
     }
+
+    $progress_indicator = isset($field['widget']['progress_indicator']) ? $field['widget']['progress_indicator'] : 'bar';
 
     if($field['widget']['upload_video'] && user_access('upload video')){
       if ($progress_indicator != 'throbber' && $implementation = viddler_progress_implementation()) {
@@ -965,7 +980,6 @@ function viddler_process($element, $edit, $form_state, $form) {
            'wrapper' => $element['#id'] .'-ahah-wrapper',
            'method' => 'replace',
            'effect' => 'fade',
-           'progress' => array('type' => 'bar', 'path' => 'viddler/progress/' . $upload_progress_key),
         ),
         '#field_name' => $element['#field_name'],
         '#delta' => $element['#delta'],
@@ -1040,7 +1054,7 @@ function viddler_process($element, $edit, $form_state, $form) {
       $deleted = true;
     }    
     
-              
+    
     if($field['widget']['vid_url']){
         $element['url_id'] = array(
           '#type' => 'textfield',

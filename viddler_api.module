@@ -1,5 +1,5 @@
 <?php
-// $Id: viddler_api.module,v 1.5 2011/01/05 03:46:00 jeremyheslop Exp $
+// $Id: viddler_api.module,v 1.6 2011/02/21 06:02:15 jeremyheslop Exp $
 /**
  * @file
  * Viddler API for Drupal
@@ -30,7 +30,7 @@ function viddler_api_authenticate() {
   $password = urlencode(variable_get('viddler_password', ''));
 
   $viddler_session_cache = cache_get('viddler_api_' . $username);
-  if (empty($viddler_session_cache->data) || time() > $viddler_session_cache->expire || $reset || true) {
+  if (empty($viddler_session_cache->data) || time() > $viddler_session_cache->expire || $reset || false) {
     $viddler_connect->apiKey = $apikey;
     try {
       $viddler_session = $viddler_connect->user_authenticate($username, $password);
@@ -57,7 +57,7 @@ function viddler_api_authenticate() {
 function viddler_api_video_getembed($id,$type = 'player',$width=437,$height=370,$autoplay = false,$options = false) {
   $phpviddlerclass = PHPVIDDLERCLASS;
   $viddler_connect = new $phpviddlerclass();
-  return $viddler_connect->video_getEmbed($id,'player',$width,$height,$autoplay,$options = false);
+  return $viddler_connect->video_getEmbed($id,'player',$width,$height,$autoplay,$options = false);  
 }
 
 /**
@@ -102,8 +102,14 @@ function viddler_api_gettoken() {
   $viddler_session = viddler_api_authenticate();
   
   if($viddler_session){
-    $viddler_recordtoken = $viddler_connect->video_getrecordtoken($viddler_session);
-    return $viddler_recordtoken;
+    try {
+      $viddler_recordtoken = $viddler_connect->video_getrecordtoken($viddler_session);
+      return $viddler_recordtoken;
+    } catch (Exception $e) {
+      if(variable_get('viddler_show_debug', ''))
+        drupal_set_message("Viddler API Get Token Error: " . $e->getMessage() . " Details: " . $e->details . " Method: " . $e->method, 'error');
+      return false;
+    }
   }
   else{
     return false;
@@ -120,11 +126,17 @@ function viddler_api_getrecordembed() {
   $viddler_connect = new $phpviddlerclass();
   $apikey = variable_get('viddler_apikey', '');
   $viddler_connect->apiKey = $apikey;
-  
   $viddler_session = viddler_api_authenticate();
+  
   if($viddler_session){
-    $viddler_recordtoken = viddler_api_gettoken();
-    return $viddler_connect->video_getRecordEmbed($viddler_recordtoken,449,400);
+    try {
+      $viddler_recordtoken = viddler_api_gettoken();
+      return $viddler_connect->video_getRecordEmbed($viddler_recordtoken["value"],449,400);
+    } catch (Exception $e) {
+      if(variable_get('viddler_show_debug', ''))
+        drupal_set_message("Viddler API Get Record Embed Error: " . $e->getMessage() . " Details: " . $e->details . " Method: " . $e->method, 'error');
+      return false;
+    }
   }
   else{
     return false;
@@ -192,8 +204,9 @@ function viddler_api_getdetails($id) {
     $viddler_connect = new $phpviddlerclass();
     $apikey = variable_get('viddler_apikey', '');
     $viddler_connect->apiKey = $apikey;
+    $viddler_session = viddler_api_authenticate();
     try {
-      $details = $viddler_connect->video_details($id);
+      $details = $viddler_connect->video_details($id, $viddler_session);
       cache_set('viddler_api_'. $id, $details['video']);
       return $details['video'];
     } catch (Exception $e) {
@@ -212,8 +225,8 @@ function viddler_api_getdetails($id) {
  */
 function viddler_api_oktoprocess($id){
   $status = viddler_api_getstatus($id);
-  switch ($status['video_status']['statuscode']){
-    case 4:
+  switch ($status['video']['status']){
+    case "ready":
       return true;
     default:
       if(variable_get('viddler_show_debug', ''))
@@ -234,8 +247,9 @@ function viddler_api_getstatus($id) {
   $viddler_connect = new $phpviddlerclass();
   $apikey = variable_get('viddler_apikey', '');
   $viddler_connect->apiKey = $apikey;
+  $viddler_session = viddler_api_authenticate();
   try {
-    $status = $viddler_connect->video_status($id);
+    $status = $viddler_connect->video_details($id, $viddler_session);
     return $status;
   } catch (Exception $e) {
     if(variable_get('viddler_show_debug', ''))
@@ -346,7 +360,7 @@ function viddler_api_uploadvideo($filename = array()) {
     
     // TODO: Pass title, description, tags, etc from drupal to viddler.
     $filearray = array(
-      "api_key" => $apikey,
+      // "api_key" => $apikey,
       "sessionid" => $viddler_session,
       "title" => 'Video Upload',
       "tags" => 'viddler drupal module',
@@ -418,8 +432,9 @@ function viddler_api_getidbyurl($url){
   $viddler_connect = new $phpviddlerclass();
   $apikey = variable_get('viddler_apikey', '');
   $viddler_connect->apiKey = $apikey;
+  $viddler_session = viddler_api_authenticate();
   try{
-    $details = $viddler_connect->video_detailsbyurl($url);
+    $details = $viddler_connect->video_detailsbyurl($url, $viddler_session);
     if($details['video']){
       cache_set('viddler_api_'. $details['video']['id'], $details['video']);
       return $details['video']['id'];
